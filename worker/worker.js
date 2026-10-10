@@ -1220,55 +1220,78 @@ async function weapi(data) {
 }
 
 async function neteaseSendCode(phone) {
-  const body = await weapi({ phone, ctcode: '86' });
-  const r = await fetch(`${BASE}/weapi/captcha/sent`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA, Referer: BASE + '/' },
-    body: new URLSearchParams(body).toString(),
-  });
-  const j = await r.json();
-  if (j.code === 200) return { ok: true };
-  return { ok: false, msg: '短信发送失败 code=' + j.code };
+  try {
+    const body = await weapi({ phone, ctcode: '86' });
+    const r = await fetch(`${BASE}/weapi/captcha/sent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA, Referer: BASE + '/' },
+      body: new URLSearchParams(body).toString(),
+    });
+    const txt = await r.text();
+    let j = null;
+    try { j = JSON.parse(txt); } catch (e) {}
+    if (j && j.code === 200) return { ok: true };
+    return { ok: false, msg: '短信发送失败：HTTP ' + r.status + (j ? ' code=' + j.code : '，响应：' + txt.slice(0, 60)) };
+  } catch (e) {
+    return { ok: false, msg: '短信发送异常（网易接口暂不可达）：' + ((e && e.message) || e) };
+  }
 }
 
 async function neteaseLogin(phone, code) {
-  const body = await weapi({ phone, countrycode: '86', captcha: code, rememberLogin: 'true' });
-  const r = await fetch(`${BASE}/weapi/login/cellphone`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA, Referer: BASE + '/' },
-    body: new URLSearchParams(body).toString(),
-  });
-  const j = await r.json();
-  if (j.code !== 200) return { ok: false, msg: '登录失败 code=' + j.code };
-  const ck = j.cookie || '';
-  let musicU = '';
-  const m = ck.match(/MUSIC_U=([^;]+)/);
-  if (m) musicU = m[1];
-  if (!musicU) {
-    const h = r.headers.get('set-cookie') || '';
-    const m2 = h.match(/MUSIC_U=([^;]+)/);
-    if (m2) musicU = m2[1];
+  try {
+    const body = await weapi({ phone, countrycode: '86', captcha: code, rememberLogin: 'true' });
+    const r = await fetch(`${BASE}/weapi/login/cellphone`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA, Referer: BASE + '/' },
+      body: new URLSearchParams(body).toString(),
+    });
+    const j = await r.json();
+    if (j.code !== 200) return { ok: false, msg: '登录失败 code=' + j.code + (j.message ? '（' + j.message + '）' : '') };
+    const ck = j.cookie || '';
+    let musicU = '';
+    const m = ck.match(/MUSIC_U=([^;]+)/);
+    if (m) musicU = m[1];
+    if (!musicU) {
+      const h = r.headers.get('set-cookie') || '';
+      const m2 = h.match(/MUSIC_U=([^;]+)/);
+      if (m2) musicU = m2[1];
+    }
+    if (!musicU) return { ok: false, msg: '未取到登录凭证' };
+    return { ok: true, musicU, uid: (j.profile || {}).userId };
+  } catch (e) {
+    return { ok: false, msg: '登录请求异常（网易接口暂不可达）：' + ((e && e.message) || e) };
   }
-  if (!musicU) return { ok: false, msg: '未取到登录凭证' };
-  return { ok: true, musicU, uid: (j.profile || {}).userId };
 }
 
 // 校验一个 MUSIC_U 是否还活着（备用通道即时反馈）
+// 策略：重试 2 次；若网易接口不可达（网络/非 JSON 响应）且 cookie 形状合法，降级放行（provisional），
+// 交由次日 Actions 的 login_by_cookie 复验，失效号会被 /api/report_dead 自动清理。
 async function validateCookie(musicU) {
-  try {
-    const ck = 'MUSIC_U=' + musicU;
-    const r = await fetch(`${BASE}/weapi/w/nuser/account/get`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA, Referer: BASE + '/', 'Cookie': ck },
-      body: new URLSearchParams(weapi({})).toString(),
-    });
-    const j = await r.json();
-    const uid = (j.profile || {}).userId;
-    if (j.code === 200 && uid) return { ok: true, uid };
-    return { ok: false, msg: 'MUSIC_U 无效或已失效（请重新从浏览器复制）' };
-  } catch (e) {
-    return { ok: false, msg: '校验失败，请重试' };
+  const ck = 'MUSIC_U=' + musicU;
+  let lastDiag = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const r = await fetch(`${BASE}/weapi/w/nuser/account/get`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA, Referer: BASE + '/', 'Cookie': ck },
+        body: new URLSearchParams(weapi({})).toString(),
+      });
+      const txt = await r.text();
+      let j = null;
+      try { j = JSON.parse(txt); } catch (e) {}
+      if (j && j.code === 200 && (j.profile || {}).userId) return { ok: true, uid: j.profile.userId };
+      if (j) return { ok: false, msg: 'MUSIC_U 无效或已失效（code=' + j.code + '，请重新从浏览器复制）' };
+      lastDiag = 'HTTP ' + r.status + '，响应非 JSON：' + txt.slice(0, 60);
+    } catch (e) {
+      lastDiag = '网络异常：' + ((e && e.message) || e);
+    }
+    if (attempt < 2) await new Promise(res => setTimeout(res, 800));
   }
+  if (/^[0-9a-fA-F]{80,}$/.test(musicU)) {
+    const hex = [...blake2b(utf8(musicU), 6)].map(b => b.toString(16).padStart(2, '0')).join('');
+    return { ok: true, uid: Number('0x' + hex.slice(0, 12)) % 1e12, provisional: true, diag: lastDiag };
+  }
+  return { ok: false, msg: '校验失败：' + lastDiag + '；且 cookie 形状不对，请重新从浏览器复制 MUSIC_U' };
 }
 
 async function resolveSong(link) {
@@ -1486,7 +1509,9 @@ async function handle(request) {
       if (!song.ok) return json({ message: song.msg }, 400);
       const r = await addEntry({ ck: 'MUSIC_U=' + mu, song: song.song, added: new Date().toISOString().slice(0, 10), name: 'manual:' + v.uid, uid: v.uid });
       if (!r.ok) return json({ message: r.msg }, 400);
-      return json({ message: '备用登记成功，次日生效。' });
+      let msg = '备用登记成功，次日生效。';
+      if (v.provisional) msg += '（注：网易校验接口暂时不可达[' + (v.diag || '') + ']，已跳过在线校验；明天任务会自动复验）';
+      return json({ message: msg });
     }
     // 隐藏管理接口：用群口令保护，从 KV 主表重新把 NB_POOL_1..5 推回 GitHub Secrets（KV 丢失/Secrets 异常时一键恢复）
     if (url.pathname === '/api/resync' && request.method === 'POST') {
@@ -1520,7 +1545,7 @@ async function handle(request) {
 
 function json(o, status = 200) { return new Response(JSON.stringify(o), { status, headers: { 'Content-Type': 'application/json' } }); }
 
-const INDEX_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>成员接入</title><style>body{font-family:-apple-system,system-ui,"PingFang SC",sans-serif;background:#f5f6f8;margin:0;padding:24px 12px;display:flex;flex-direction:column;align-items:center;gap:16px}.head{text-align:center;margin-bottom:2px}.page-title{font-size:20px;font-weight:600;color:#3b6d11;margin:0}.page-sub{font-size:13px;color:#666;margin:6px 0 0}.wrap{display:flex;flex-wrap:wrap;gap:18px;justify-content:center;width:100%;max-width:740px}.card{background:#fff;padding:26px 22px;border-radius:14px;width:330px;box-sizing:border-box;box-shadow:0 2px 12px rgba(0,0,0,.08)}h1{font-size:17px;margin:0 0 4px}h1.alt{color:#b06a00}p{font-size:13px;color:#666;margin:0 0 16px;line-height:1.5}label{display:block;font-size:13px;margin:12px 0 4px;color:#333}input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:14px}.row{display:flex;gap:8px}.row input{flex:1}button{margin-top:14px;width:100%;padding:11px;border:0;border-radius:8px;background:#3b6d11;color:#fff;font-size:15px;cursor:pointer}button.mini{margin-top:0;width:auto;padding:10px 12px;font-size:13px;background:#5a8f1d;white-space:nowrap}button:disabled{opacity:.55;cursor:default}.msg{margin-top:14px;font-size:13px;min-height:18px;line-height:1.5}.ok{color:#3b6d11}.err{color:#a32d2d}.tip{color:#666}details{margin-top:14px;font-size:12px;color:#666;line-height:1.6}summary{cursor:pointer;color:#3b6d11}code{background:#eee;padding:1px 4px;border-radius:4px}</style></head><body><div class="head"><h1 class="page-title">成员接入</h1><p class="page-sub">选择一种方式登记：左侧手机登录，右侧备用手动（页面版本 v20261010d）</p></div><div class="wrap"><div class="card"><h1>成员接入（方式一 · 手机登录）</h1><p>① 填手机号 → ② 点「获取验证码」收短信 → ③ 填验证码和歌曲链接 → ④ 点登记。系统自动登录并登记，<b>次日生效</b>。注意：<b>每个账号限登记一首歌</b>，重复登记会被拒绝。</p><label>手机号</label><input id="phone" inputmode="numeric" maxlength="11" placeholder="11 位手机号"><label>短信验证码</label><div class="row"><input id="code" inputmode="numeric" maxlength="6" placeholder="网易云短信验证码"><button id="send" class="mini">获取验证码</button></div><label>分享链接</label><input id="link" placeholder="粘贴 APP 内分享的单曲链接"><label>群口令</label><input id="pass" type="text" placeholder="群内获取的群口令"><button id="btn">登录并登记</button><div class="msg tip" id="msg">提示：链接在网易云 APP 里「分享→复制链接」即可。</div></div><div class="card"><h1 class="alt">成员接入（方式二 · 备用手动）</h1><p>手机短信收不到、或登录总失败时用本方式：自己从浏览器复制 <code>MUSIC_U</code> 粘贴过来，同样<b>次日生效</b>。<b>每个账号限登记一首歌</b>，重复登记会被拒绝。</p><label>MUSIC_U</label><input id="mu" placeholder="粘贴浏览器里的 MUSIC_U 值"><label>分享链接</label><input id="link2" placeholder="粘贴 APP 内分享的单曲链接"><label>群口令</label><input id="pass2" type="text" placeholder="群内获取的群口令"><button id="btn2">备用登记</button><details><summary>怎么拿到 MUSIC_U？（点开看）</summary>用电脑浏览器打开 <code>https://music.163.com</code> 并登录 → 按 <code>F12</code> → 切到「Application / 应用」标签 → 左侧展开 <code>Cookies</code> → 选 <code>music.163.com</code> → 在右边找到名为 <code>MUSIC_U</code> 的那一行，复制它的「Value / 值」整串粘进来即可。</details><div class="msg tip" id="msg2"></div></div></div><script>const $=id=>document.getElementById(id);function normPhone(s){return (s||'').replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248)).replace(/[^0-9]/g,'');}function setMsg(el,t,cls){const m=$(el);m.textContent=t;m.className='msg'+(cls?(' '+cls):'');}let timer=null;$('send').onclick=async()=>{const phone=normPhone($('phone').value);if(!/^1[0-9]{10}$/.test(phone)){setMsg('msg','手机号格式不对：识别到 '+phone.length+' 位（'+phone+'）。若带了 +86 前缀请删掉，只填 11 位号码','err');return;}$('send').disabled=true;setMsg('msg','正在发送验证码…');try{const r=await fetch('/api/sendcode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});const d=await r.json();if(r.ok){setMsg('msg','验证码已发送，请查收短信','ok');startCd();}else{setMsg('msg',d.message||'发送失败，请重试','err');$('send').disabled=false;}}catch(e){setMsg('msg','网络错误，请重试','err');$('send').disabled=false;}};function startCd(){let cd=60;$('send').textContent=cd+'s';timer=setInterval(()=>{cd--;if(cd<=0){clearInterval(timer);timer=null;$('send').textContent='获取验证码';$('send').disabled=false;}else{$('send').textContent=cd+'s';}},1000);}$('btn').onclick=async()=>{const phone=normPhone($('phone').value),code=$('code').value.trim(),link=$('link').value.trim(),pass=$('pass').value.trim();if(!/^1[0-9]{10}$/.test(phone)){setMsg('msg','手机号格式不对','err');return;}if(!/^[0-9]{4,6}$/.test(code)){setMsg('msg','请填写验证码','err');return;}if(!link){setMsg('msg','请填写歌曲链接','err');return;}setMsg('msg','处理中…');$('btn').disabled=true;try{const r=await fetch('/api/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,code,link,pass})});const d=await r.json();if(r.ok){setMsg('msg',d.message||'登记成功，次日开始。','ok');}else{setMsg('msg',d.message||'失败','err');}}catch(e){setMsg('msg','网络错误','err');}$('btn').disabled=false;};$('btn2').onclick=async()=>{const musicU=$('mu').value.trim(),link=$('link2').value.trim(),pass=$('pass2').value.trim();if(!musicU){setMsg('msg2','请填写 MUSIC_U','err');return;}if(!link){setMsg('msg2','请填写歌曲链接','err');return;}setMsg('msg2','处理中…');$('btn2').disabled=true;try{const r=await fetch('/api/join_manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({musicU,link,pass})});const d=await r.json();if(r.ok){setMsg('msg2',d.message||'备用登记成功，次日开始。','ok');}else{setMsg('msg2',d.message||'失败','err');}}catch(e){setMsg('msg2','网络错误','err');}$('btn2').disabled=false;};</script></body></html>`;
+const INDEX_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>成员接入</title><style>body{font-family:-apple-system,system-ui,"PingFang SC",sans-serif;background:#f5f6f8;margin:0;padding:24px 12px;display:flex;flex-direction:column;align-items:center;gap:16px}.head{text-align:center;margin-bottom:2px}.page-title{font-size:20px;font-weight:600;color:#3b6d11;margin:0}.page-sub{font-size:13px;color:#666;margin:6px 0 0}.wrap{display:flex;flex-wrap:wrap;gap:18px;justify-content:center;width:100%;max-width:740px}.card{background:#fff;padding:26px 22px;border-radius:14px;width:330px;box-sizing:border-box;box-shadow:0 2px 12px rgba(0,0,0,.08)}h1{font-size:17px;margin:0 0 4px}h1.alt{color:#b06a00}p{font-size:13px;color:#666;margin:0 0 16px;line-height:1.5}label{display:block;font-size:13px;margin:12px 0 4px;color:#333}input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:14px}.row{display:flex;gap:8px}.row input{flex:1}button{margin-top:14px;width:100%;padding:11px;border:0;border-radius:8px;background:#3b6d11;color:#fff;font-size:15px;cursor:pointer}button.mini{margin-top:0;width:auto;padding:10px 12px;font-size:13px;background:#5a8f1d;white-space:nowrap}button:disabled{opacity:.55;cursor:default}.msg{margin-top:14px;font-size:13px;min-height:18px;line-height:1.5}.ok{color:#3b6d11}.err{color:#a32d2d}.tip{color:#666}details{margin-top:14px;font-size:12px;color:#666;line-height:1.6}summary{cursor:pointer;color:#3b6d11}code{background:#eee;padding:1px 4px;border-radius:4px}</style></head><body><div class="head"><h1 class="page-title">成员接入</h1><p class="page-sub">选择一种方式登记：左侧手机登录，右侧备用手动（页面版本 v20261010e）</p></div><div class="wrap"><div class="card"><h1>成员接入（方式一 · 手机登录）</h1><p>① 填手机号 → ② 点「获取验证码」收短信 → ③ 填验证码和歌曲链接 → ④ 点登记。系统自动登录并登记，<b>次日生效</b>。注意：<b>每个账号限登记一首歌</b>，重复登记会被拒绝。</p><label>手机号</label><input id="phone" inputmode="numeric" maxlength="11" placeholder="11 位手机号"><label>短信验证码</label><div class="row"><input id="code" inputmode="numeric" maxlength="6" placeholder="网易云短信验证码"><button id="send" class="mini">获取验证码</button></div><label>分享链接</label><input id="link" placeholder="粘贴 APP 内分享的单曲链接"><label>群口令</label><input id="pass" type="text" placeholder="群内获取的群口令"><button id="btn">登录并登记</button><div class="msg tip" id="msg">提示：链接在网易云 APP 里「分享→复制链接」即可。</div></div><div class="card"><h1 class="alt">成员接入（方式二 · 备用手动）</h1><p>手机短信收不到、或登录总失败时用本方式：自己从浏览器复制 <code>MUSIC_U</code> 粘贴过来，同样<b>次日生效</b>。<b>每个账号限登记一首歌</b>，重复登记会被拒绝。</p><label>MUSIC_U</label><input id="mu" placeholder="粘贴浏览器里的 MUSIC_U 值"><label>分享链接</label><input id="link2" placeholder="粘贴 APP 内分享的单曲链接"><label>群口令</label><input id="pass2" type="text" placeholder="群内获取的群口令"><button id="btn2">备用登记</button><details><summary>怎么拿到 MUSIC_U？（点开看）</summary>用电脑浏览器打开 <code>https://music.163.com</code> 并登录 → 按 <code>F12</code> → 切到「Application / 应用」标签 → 左侧展开 <code>Cookies</code> → 选 <code>music.163.com</code> → 在右边找到名为 <code>MUSIC_U</code> 的那一行，复制它的「Value / 值」整串粘进来即可。</details><div class="msg tip" id="msg2"></div></div></div><script>const $=id=>document.getElementById(id);function normPhone(s){return (s||'').replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248)).replace(/[^0-9]/g,'');}function setMsg(el,t,cls){const m=$(el);m.textContent=t;m.className='msg'+(cls?(' '+cls):'');}let timer=null;$('send').onclick=async()=>{const phone=normPhone($('phone').value);if(!/^1[0-9]{10}$/.test(phone)){setMsg('msg','手机号格式不对：识别到 '+phone.length+' 位（'+phone+'）。若带了 +86 前缀请删掉，只填 11 位号码','err');return;}$('send').disabled=true;setMsg('msg','正在发送验证码…');try{const r=await fetch('/api/sendcode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});const d=await r.json();if(r.ok){setMsg('msg','验证码已发送，请查收短信','ok');startCd();}else{setMsg('msg',d.message||'发送失败，请重试','err');$('send').disabled=false;}}catch(e){setMsg('msg','网络错误，请重试','err');$('send').disabled=false;}};function startCd(){let cd=60;$('send').textContent=cd+'s';timer=setInterval(()=>{cd--;if(cd<=0){clearInterval(timer);timer=null;$('send').textContent='获取验证码';$('send').disabled=false;}else{$('send').textContent=cd+'s';}},1000);}$('btn').onclick=async()=>{const phone=normPhone($('phone').value),code=$('code').value.trim(),link=$('link').value.trim(),pass=$('pass').value.trim();if(!/^1[0-9]{10}$/.test(phone)){setMsg('msg','手机号格式不对','err');return;}if(!/^[0-9]{4,6}$/.test(code)){setMsg('msg','请填写验证码','err');return;}if(!link){setMsg('msg','请填写歌曲链接','err');return;}setMsg('msg','处理中…');$('btn').disabled=true;try{const r=await fetch('/api/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,code,link,pass})});const d=await r.json();if(r.ok){setMsg('msg',d.message||'登记成功，次日开始。','ok');}else{setMsg('msg',d.message||'失败','err');}}catch(e){setMsg('msg','网络错误','err');}$('btn').disabled=false;};$('btn2').onclick=async()=>{const musicU=$('mu').value.trim(),link=$('link2').value.trim(),pass=$('pass2').value.trim();if(!musicU){setMsg('msg2','请填写 MUSIC_U','err');return;}if(!link){setMsg('msg2','请填写歌曲链接','err');return;}setMsg('msg2','处理中…');$('btn2').disabled=true;try{const r=await fetch('/api/join_manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({musicU,link,pass})});const d=await r.json();if(r.ok){setMsg('msg2',d.message||'备用登记成功，次日开始。','ok');}else{setMsg('msg2',d.message||'失败','err');}}catch(e){setMsg('msg2','网络错误','err');}$('btn2').disabled=false;};</script></body></html>`;
 
 addEventListener('fetch', (event) => {
   event.respondWith(handle(event.request));
