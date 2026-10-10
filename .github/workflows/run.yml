@@ -57,6 +57,7 @@ jobs:
     env:
       NS: ${{ needs.plan.outputs.ns }}
       SLICE: ${{ matrix.slice }}
+      NB_PASS: ${{ secrets.NB_PASS }}
       NB_POOL_1: ${{ secrets.NB_POOL_1 }}
       NB_POOL_2: ${{ secrets.NB_POOL_2 }}
       NB_POOL_3: ${{ secrets.NB_POOL_3 }}
