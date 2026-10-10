@@ -3,7 +3,18 @@
   "name": "cron-relay",
   "main": "worker/worker.js",
   "compatibility_date": "2026-10-06",
+  "workers_dev": true,
   "observability": {
     "enabled": true
+  },
+  "kv_namespaces": [
+    {
+      "binding": "POOL",
+      "id": "12aac9fba6a04b8fb19ee88ffac7fc7a"
+    }
+  ],
+  "vars": {
+    "GH_OWNER": "xm921018",
+    "GH_REPO": "cron-relay"
   }
 }

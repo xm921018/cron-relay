@@ -10,7 +10,7 @@
 //   POOL       KV namespace 绑定（维护主号池，cookie 不落 GitHub 仓库文件）
 // 注意：cookie 只在 KV 与 GitHub Secrets（加密）中存在，仓库文件无明文。
 
-import * as nacl from 'https://esm.sh/tweetnacl@1.0.3';
+import nacl from './nacl.js';
 
 const BASE = 'https://music.163.com';
 const NONCE = '0CoJUm6Qyw8W8jud';

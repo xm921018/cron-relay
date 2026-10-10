@@ -8,3 +8,10 @@ diag_logs/
 __pycache__/
 *.pyc
 .DS_Store
+
+# 凭证文件（含 Cloudflare/GitHub token，绝不进仓库）
+*令牌*.txt
+cloudflare-*.txt
+token*.txt
+*.token
+
