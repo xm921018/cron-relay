@@ -6,14 +6,56 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  plan:
+    # 动态扩片：按号池实际人数算出需要的并行片数，人数涨片数自动涨，无需改代码
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      ns: ${{ steps.plan.outputs.ns }}
+    steps:
+      - name: plan slices
+        id: plan
+        env:
+          NB_POOL_1: ${{ secrets.NB_POOL_1 }}
+          NB_POOL_2: ${{ secrets.NB_POOL_2 }}
+          NB_POOL_3: ${{ secrets.NB_POOL_3 }}
+          NB_POOL_4: ${{ secrets.NB_POOL_4 }}
+          NB_POOL_5: ${{ secrets.NB_POOL_5 }}
+          MIN_SLICES: '4'
+          MAX_SLICES: '30'
+          ACCOUNTS_PER_SLICE: '8'   # 单号约 35 分钟，片上限 6h，留余量
+        run: |
+          python3 - <<'EOF'
+          import base64, json, os, math
+          n = 0
+          for i in range(1, 6):
+              raw = os.environ.get(f"NB_POOL_{i}")
+              if not raw:
+                  continue
+              try:
+                  chunk = json.loads(base64.b64decode(raw).decode("utf-8"))
+                  if isinstance(chunk, list):
+                      n += len(chunk)
+              except Exception:
+                  pass
+          per = int(os.environ.get("ACCOUNTS_PER_SLICE", "8"))
+          lo = int(os.environ.get("MIN_SLICES", "4"))
+          hi = int(os.environ.get("MAX_SLICES", "30"))
+          ns = max(lo, min(hi, math.ceil(n / per) if n else lo))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"ns={ns}\n")
+              f.write(f"matrix={json.dumps({'slice': list(range(ns))})}\n")
+          print(f"pool_size={n} ns={ns}")
+          EOF
+
   brush:
+    needs: plan
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        slice: [0, 1, 2, 3]     # 4 个并行 job = 最多 4 个不同出口 IP
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      NS: 4
+      NS: ${{ needs.plan.outputs.ns }}
       SLICE: ${{ matrix.slice }}
       NB_POOL_1: ${{ secrets.NB_POOL_1 }}
       NB_POOL_2: ${{ secrets.NB_POOL_2 }}
@@ -25,11 +67,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -q pycryptodome requests
+      - run: pip install -q pycryptodome requests pillow
       - name: stagger start
         run: sleep $((RANDOM % 240 + 60))   # 错开各片启动，避免同刻批量特征
       - name: run slice
         run: python run.py
+      - name: build accounts for signin/notes
+        run: python make_accounts.py
+      - name: daily signin
+        run: |
+          N=$(python -c "import json;print(len(json.load(open('accounts.json'))['accounts']))")
+          if [ "$N" -gt 0 ]; then python signin.py; else echo "本片无账号，跳过签到"; fi
+      - name: notes publish (every 5 days)
+        run: |
+          N=$(python -c "import json;print(len(json.load(open('accounts.json'))['accounts']))")
+          if [ "$N" -gt 0 ]; then python notes.py; else echo "本片无账号，跳过笔记"; fi
       - name: upload diag
         if: always()
         uses: actions/upload-artifact@v4
