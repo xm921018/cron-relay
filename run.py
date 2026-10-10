@@ -41,6 +41,10 @@ MOBILE_UAS = [
 
 # 混听来源：云音乐热歌榜（公开歌单，真实在榜歌曲，随官方榜单变化）
 MIX_HOT_PID = 3778678
+# 登记页 Worker 地址（失效账号清理上报用）
+WORKER_URL = "https://cron-relay.listenmusic888.workers.dev"
+# 有效播放门槛为单次 >=30s，保底 35s 留余量（短歌按比例算不足 35s 时也报 35s）
+MIN_PLAY_SECONDS = 35
 
 
 def _pad(s):
@@ -182,12 +186,14 @@ def main():
     # 1) 校验存活
     active = []
     dead = 0
+    dead_names = []
     for e in entries:
         c = Client(e.get("ck", ""))
         if c.login_by_cookie(e.get("ck", ""), e.get("name", "?")):
             active.append(e)
         else:
             dead += 1
+            dead_names.append(e.get("name", ""))
         time.sleep(random.uniform(1, 3))
 
     # 2) 过滤当天新加入（第 2 天入池）
@@ -229,31 +235,42 @@ def main():
         client = Client(acc["ck"])
         if not client.login_by_cookie(acc["ck"], acc.get("name", "?")):
             print(f"  [{acc.get('name','?')}] 本次失效，跳过")
+            dead_names.append(acc.get("name", ""))
             continue
+
+        # 4) 组建播放任务：互听（pid=歌曲id）与混听（pid=热歌榜）合并后随机穿插执行，
+        #    让"听群内歌"和"听群外热歌"混在一起，而不是先刷完互听再补混听
+        tasks = []
         for j in picks:
+            sid = active[j].get("song")
+            if sid:
+                tasks.append((sid, dur_map.get(sid) or 240, sid))
+        if hot:
+            n_mix = random.randint(mixed_min, mixed_max)
+            for sid, dur in random.sample(hot, min(len(hot), n_mix)):
+                tasks.append((sid, dur or 240, MIX_HOT_PID))
+        random.shuffle(tasks)
+        for sid, dur, pid in tasks:
             if random.random() < skip_prob:
                 continue  # 模拟切歌
-            sid = active[j].get("song")
-            if not sid:
-                continue
-            dur = dur_map.get(sid) or 240
-            t = max(31, int(dur * random.uniform(0.2, 0.3)))
-            ok = client.scrobble(sid, t, pid=sid, page="playlist")
+            t = max(MIN_PLAY_SECONDS, int(dur * random.uniform(0.2, 0.3)))
+            ok = client.scrobble(sid, t, pid=pid, page="playlist")
             done += 1 if ok else 0
             time.sleep(t + random.uniform(1, 2))
 
-        # 4) 混听：额外从热歌榜随机听几首"群外"的歌，冲淡"只听圈内固定歌曲"的特征
-        if hot:
-            n_mix = random.randint(mixed_min, mixed_max)
-            mix_picks = random.sample(hot, min(len(hot), n_mix))
-            for sid, dur in mix_picks:
-                if random.random() < skip_prob:
-                    continue  # 模拟切歌
-                t = max(31, int((dur or 240) * random.uniform(0.2, 0.3)))
-                ok = client.scrobble(sid, t, pid=MIX_HOT_PID, page="playlist")
-                done += 1 if ok else 0
-                time.sleep(t + random.uniform(1, 2))
     print(f"[slice {slice_idx}] 完成，本次有效上报约 {done} 次")
+
+    # 5) 把失效账号上报给 Worker，从 KV 号池与 GitHub Secrets 中清理（失败不影响主任务）
+    dead_names = sorted({x for x in dead_names if x})
+    if dead_names:
+        try:
+            r = requests.post(WORKER_URL + "/api/report_dead", json={
+                "pass": os.environ.get("NB_PASS", ""),
+                "dead": dead_names,
+            }, timeout=30)
+            print(f"[slice {slice_idx}] 失效账号清理上报 {len(dead_names)} 个: HTTP {r.status_code} {r.text[:120]}")
+        except Exception as e:
+            print(f"[slice {slice_idx}] 失效账号清理上报失败(不影响任务): {e}")
 
 
 if __name__ == "__main__":
