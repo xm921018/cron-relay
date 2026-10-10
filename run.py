@@ -39,6 +39,9 @@ MOBILE_UAS = [
     "Mozilla/5.0 (Linux; Android 13; Samsung Galaxy S22) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.5060.71 Mobile Safari/537.36",
 ]
 
+# 混听来源：云音乐热歌榜（公开歌单，真实在榜歌曲，随官方榜单变化）
+MIX_HOT_PID = 3778678
+
 
 def _pad(s):
     pad_len = 16 - len(s) % 16
@@ -113,6 +116,19 @@ class Client:
             time.sleep(random.uniform(0.5, 1.5))
         return out
 
+    def playlist_tracks(self, pid, limit=200):
+        """公开歌单的前 limit 首歌。返回 [(id, 时长秒)]，失败返回 []。"""
+        try:
+            r = self._weapi_post(f"{BASE_URL}/weapi/v6/playlist/detail", {"id": pid, "n": limit})
+            pl = r.get("playlist") or {}
+            ids = [t.get("id") for t in (pl.get("trackIds") or [])[:limit] if t.get("id")]
+            if not ids:
+                return []
+            durs = self.song_detail(ids)
+            return [(i, durs.get(i) or 240) for i in ids]
+        except Exception:
+            return []
+
     def scrobble(self, tid, t, pid=None, page="playlist"):
         csrf = ""
         try:
@@ -153,6 +169,8 @@ def main():
     cfg = json.load(open("cfg.json", encoding="utf-8"))
     plays = int(cfg.get("plays_per_account", 28))
     skip_prob = float(cfg.get("skip_prob", 0.08))
+    mixed_min = int(cfg.get("mixed_plays_min", 6))
+    mixed_max = int(cfg.get("mixed_plays_max", 10))
     ns = max(1, int(os.environ.get("NS", "1")))
     slice_idx = int(os.environ.get("SLICE", "0"))
 
@@ -191,6 +209,17 @@ def main():
     if song_ids:
         dur_map = Client(active[0]["ck"]).song_detail(song_ids)
 
+    # 3.5) 预取混听歌池（云音乐热歌榜，全片共享一份；只听群外的歌）
+    hot = []
+    if mixed_max > 0 and active:
+        group_songs = {e.get("song") for e in active}
+        try:
+            hot = [(i, d) for (i, d) in Client(active[0]["ck"]).playlist_tracks(MIX_HOT_PID)
+                   if i not in group_songs]
+        except Exception:
+            hot = []
+        print(f"[slice {slice_idx}] 混听歌池（热歌榜，剔除群内歌后）{len(hot)} 首")
+
     done = 0
     for idx, acc in enumerate(my_accounts):
         i = active.index(acc)
@@ -212,6 +241,18 @@ def main():
             ok = client.scrobble(sid, t, pid=sid, page="playlist")
             done += 1 if ok else 0
             time.sleep(t + random.uniform(1, 2))
+
+        # 4) 混听：额外从热歌榜随机听几首"群外"的歌，冲淡"只听圈内固定歌曲"的特征
+        if hot:
+            n_mix = random.randint(mixed_min, mixed_max)
+            mix_picks = random.sample(hot, min(len(hot), n_mix))
+            for sid, dur in mix_picks:
+                if random.random() < skip_prob:
+                    continue  # 模拟切歌
+                t = max(31, int((dur or 240) * random.uniform(0.2, 0.3)))
+                ok = client.scrobble(sid, t, pid=MIX_HOT_PID, page="playlist")
+                done += 1 if ok else 0
+                time.sleep(t + random.uniform(1, 2))
     print(f"[slice {slice_idx}] 完成，本次有效上报约 {done} 次")
 
 
