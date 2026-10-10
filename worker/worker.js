@@ -104,14 +104,28 @@ async function resolveSong(link) {
 }
 
 // ---- GitHub Secrets（sealed box） ----
-const GH = () => ({ token: ENV.GH_TOKEN, owner: ENV.GH_OWNER, repo: ENV.GH_REPO });
+// GH_TOKEN / GROUP_PASS 存于 KV（加密、不落仓库、不暴露给前端），运行时从 POOL 读取。
+// 这样无需 Cloudflare Secret 权限即可配置，且 GitHub PAT 也不会进公开仓库文件。
+let _cfg;
+async function cfg() {
+  if (!_cfg) {
+    _cfg = {
+      ghToken: await ENV.POOL.get('GH_TOKEN'),
+      groupPass: await ENV.POOL.get('GROUP_PASS'),
+      owner: ENV.GH_OWNER,
+      repo: ENV.GH_REPO,
+    };
+  }
+  return _cfg;
+}
+const GH = async () => { const c = await cfg(); return { token: c.ghToken, owner: c.owner, repo: c.repo }; };
 async function ghPublicKey() {
-  const g = GH();
+  const g = await GH();
   const r = await fetch(`https://api.github.com/repos/${g.owner}/${g.repo}/actions/secrets/public-key`, { headers: { Authorization: `token ${g.token}`, Accept: 'application/vnd.github+json' } });
   return r.json();
 }
 async function ghPutSecret(name, value) {
-  const g = GH();
+  const g = await GH();
   const pk = await ghPublicKey();
   const theirPub = b64dec(pk.key);
   const eph = nacl.box.keyPair();
@@ -167,7 +181,8 @@ export default {
     if (url.pathname === '/api/join' && request.method === 'POST') {
       let body;
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400); }
-      if (body.pass !== ENV.GROUP_PASS) return json({ message: '群口令错误' }, 403);
+      const c = await cfg();
+      if (body.pass !== c.groupPass) return json({ message: '群口令错误' }, 403);
       const login = await neteaseLogin(body.phone, body.code);
       if (!login.ok) return json({ message: login.msg }, 400);
       const song = await resolveSong(body.link);
@@ -178,7 +193,8 @@ export default {
     if (url.pathname === '/api/join_manual' && request.method === 'POST') {
       let body;
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400); }
-      if (body.pass !== ENV.GROUP_PASS) return json({ message: '群口令错误' }, 403);
+      const c = await cfg();
+      if (body.pass !== c.groupPass) return json({ message: '群口令错误' }, 403);
       const mu = (body.musicU || '').trim();
       if (!mu) return json({ message: '请填写 MUSIC_U' }, 400);
       const v = await validateCookie(mu);
