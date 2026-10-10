@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>成员接入</title>
+<style>
+  body{font-family:-apple-system,system-ui,"PingFang SC",sans-serif;background:#f5f6f8;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center}
+  .card{background:#fff;padding:28px 24px;border-radius:14px;width:330px;box-shadow:0 2px 12px rgba(0,0,0,.08)}
+  h1{font-size:18px;margin:0 0 4px}
+  p{font-size:13px;color:#666;margin:0 0 18px;line-height:1.5}
+  label{display:block;font-size:13px;margin:12px 0 4px;color:#333}
+  input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:14px}
+  .row{display:flex;gap:8px}
+  .row input{flex:1}
+  button{margin-top:14px;width:100%;padding:11px;border:0;border-radius:8px;background:#3b6d11;color:#fff;font-size:15px;cursor:pointer}
+  button.mini{margin-top:0;width:auto;padding:10px 12px;font-size:13px;background:#5a8f1d;white-space:nowrap}
+  button:disabled{opacity:.55;cursor:default}
+  .msg{margin-top:14px;font-size:13px;min-height:18px;line-height:1.5}
+  .ok{color:#3b6d11}.err{color:#a32d2d}.tip{color:#666}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>成员接入</h1>
+    <p>① 填手机号 → ② 点「获取验证码」收短信 → ③ 填验证码和歌曲链接 → ④ 点登记。系统自动登录并登记，<b>次日生效</b>。</p>
+    <label>手机号</label><input id="phone" inputmode="numeric" maxlength="11" placeholder="11 位手机号" />
+    <label>短信验证码</label>
+    <div class="row">
+      <input id="code" inputmode="numeric" maxlength="6" placeholder="网易云短信验证码" />
+      <button id="send" class="mini">获取验证码</button>
+    </div>
+    <label>分享链接</label><input id="link" placeholder="粘贴 APP 内分享的单曲链接" />
+    <label>群口令</label><input id="pass" type="password" placeholder="群内获取的群口令" />
+    <button id="btn">登录并登记</button>
+    <div class="msg tip" id="msg">提示：链接在网易云 APP 里「分享→复制链接」即可。</div>
+  </div>
+<script>
+  const $ = id => document.getElementById(id);
+  function setMsg(t, cls){ const m=$('msg'); m.textContent=t; m.className='msg'+(cls?(' '+cls):''); }
+  let timer=null;
+  $('send').onclick = async () => {
+    const phone=$('phone').value.trim();
+    if(!/^1\d{10}$/.test(phone)){ setMsg('请先填写正确的 11 位手机号','err'); return; }
+    $('send').disabled=true; setMsg('正在发送验证码…');
+    try{
+      const r=await fetch('/api/sendcode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+      const d=await r.json();
+      if(r.ok){ setMsg('验证码已发送，请查收短信','ok'); startCd(); }
+      else{ setMsg(d.message||'发送失败，请重试','err'); $('send').disabled=false; }
+    }catch(e){ setMsg('网络错误，请重试','err'); $('send').disabled=false; }
+  };
+  function startCd(){
+    let cd=60; $('send').textContent=cd+'s';
+    timer=setInterval(()=>{ cd--; if(cd<=0){ clearInterval(timer); timer=null; $('send').textContent='获取验证码'; $('send').disabled=false; }
+      else { $('send').textContent=cd+'s'; } },1000);
+  }
+  $('btn').onclick = async () => {
+    const phone=$('phone').value.trim(), code=$('code').value.trim(),
+          link=$('link').value.trim(), pass=$('pass').value.trim();
+    if(!/^1\d{10}$/.test(phone)){ setMsg('手机号格式不对','err'); return; }
+    if(!/^\d{4,6}$/.test(code)){ setMsg('请填写验证码','err'); return; }
+    if(!link){ setMsg('请填写歌曲链接','err'); return; }
+    const msg=$('msg'); msg.className='msg'; msg.textContent='处理中…'; $('btn').disabled=true;
+    try{
+      const r=await fetch('/api/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,code,link,pass})});
+      const d=await r.json();
+      if(r.ok){msg.className='msg ok';msg.textContent=d.message||'登记成功，次日开始。';}
+      else{msg.className='msg err';msg.textContent=d.message||'失败';}
+    }catch(e){msg.className='msg err';msg.textContent='网络错误';}
+    $('btn').disabled=false;
+  };
+</script>
+</body>
+</html>

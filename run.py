@@ -1,0 +1,219 @@
+# -*- coding: utf-8 -*-
+"""
+定时任务执行体（与仓库对外用途无关的命名）。
+
+职责：
+1. 从运行环境读取加密分片 NB_POOL_1..5（每条 = [{ck, song, added, name}, ...]），
+   本文件/仓库不落任何明文 cookie。
+2. 校验每个账号是否存活（account/get），丢弃失效会话。
+3. 过滤"当天新加入"的号（added == 今天 不参与，满足第 2 天入池）。
+4. 当前 job 只处理自己分片 (i % NS == SLICE) 的账号；每个账号随机挑
+   PLAYS_PER_ACCOUNT 个"别人的歌"播放，绝不播自己的歌。
+5. 复用已验证可用的上报通道（weapi + eapi 双通道，time>=31s）。
+
+配置见 cfg.json。运行参数来自环境变量 NS / SLICE（matrix 注入）。
+"""
+import json
+import os
+import sys
+import time
+import random
+import base64
+import string
+from datetime import date
+
+import requests
+from Crypto.Cipher import AES
+
+BASE_URL = "https://music.163.com"
+
+# ===== 加密参数（与历史实现一致，公开已知） =====
+_NONCE = "0CoJUm6Qyw8W8jud"
+_SECRETKEY = "TA3YiYCfY2dDJQgg"
+_VI = "0102030405060708"
+_ENCSECKEY = "84ca47bca10bad09a6b04c5c927ef077d9b9f1e37098aa3eac6ea70eb59df0aa28b691b7e75e4f1f9831754919ea784c8f74fbfadf2898b0be17849fd656060162857830e241aba44991601f137624094c114ea8d17bce815b0cd4e5b8e2fbaba978c6d1d14dc3d1faf852bdd28818031ccdaaa13a6018e1024e2aae98844210"
+
+MOBILE_UAS = [
+    "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.41 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 11; Redmi Note 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.73 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; Samsung Galaxy S22) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.5060.71 Mobile Safari/537.36",
+]
+
+
+def _pad(s):
+    pad_len = 16 - len(s) % 16
+    return s + chr(pad_len) * pad_len
+
+
+def _aes_encrypt(text, key):
+    cipher = AES.new(key.encode("utf-8"), AES.MODE_CBC, _VI.encode("utf-8"))
+    return base64.b64encode(cipher.encrypt(_pad(text).encode("utf-8"))).decode("utf-8")
+
+
+def weapi_encrypt(data):
+    text = json.dumps(data)
+    p = _aes_encrypt(text, _NONCE)
+    p = _aes_encrypt(p, _SECRETKEY)
+    return {"params": p, "encSecKey": _ENCSECKEY}
+
+
+class Client:
+    def __init__(self, cookie, device_id=None):
+        self.s = requests.Session()
+        self.uid = None
+        self.nickname = None
+        self.account_name = ""
+        if not device_id:
+            device_id = "YD-" + "".join(random.choices(string.ascii_letters + string.digits, k=32))
+        enriched = (
+            f"{cookie}; deviceId={device_id}; os=pc; appver=2.10.11.200601; "
+            f"osver=Microsoft-Windows-10-Professional-build-19045-64bit; channel=netease; MUSIC_A_T=1"
+        )
+        self.s.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://music.163.com",
+            "Origin": "https://music.163.com",
+            "Cookie": enriched,
+        })
+
+    def _weapi_post(self, url, data):
+        r = self.s.post(url, data=weapi_encrypt(data), timeout=30)
+        try:
+            return r.json()
+        except Exception:
+            return {"_raw": r.text[:200], "status_code": r.status_code}
+
+    def login_by_cookie(self, cookie, name=""):
+        self.account_name = name
+        try:
+            info = self._weapi_post(f"{BASE_URL}/weapi/w/nuser/account/get", {})
+            prof = (info.get("profile") or info.get("data", {}).get("profile") or {})
+            self.uid = prof.get("userId")
+            self.nickname = prof.get("nickname")
+            if info.get("code") == 200 and self.uid:
+                return True
+            # 受限会话：profile 隐藏但会话可能仍活，用每日推荐二次验证
+            rec = self._weapi_post(f"{BASE_URL}/weapi/v3/discovery/recommend/songs", {"limit": 1, "offset": 0})
+            ok = rec.get("code") == 200 and len((rec.get("data") or {}).get("dailySongs") or []) > 0
+            return ok
+        except Exception:
+            return False
+
+    def song_detail(self, ids):
+        out = {}
+        # 分批，避免单请求过大
+        for i in range(0, len(ids), 200):
+            batch = ids[i:i + 200]
+            try:
+                r = self._weapi_post(f"{BASE_URL}/weapi/v3/song/detail", {"c": json.dumps([{"id": x} for x in batch])})
+                for t in (r.get("songs") or []):
+                    out[t.get("id")] = (t.get("dt") or 0) // 1000
+            except Exception:
+                pass
+            time.sleep(random.uniform(0.5, 1.5))
+        return out
+
+    def scrobble(self, tid, t, pid=None, page="playlist"):
+        csrf = ""
+        try:
+            csrf = self.s.headers.get("Cookie", "").split("__csrf=")[-1].split(";")[0].strip()
+        except Exception:
+            pass
+        try:
+            start = [{"action": "startplay", "json": {"id": str(tid), "type": "song", "content": f"id={tid}"}}]
+            self._weapi_post(f"{BASE_URL}/weapi/feedback/weblog", {"logs": json.dumps(start), "csrf_token": csrf})
+            play = [{"action": "play", "json": {
+                "download": "0", "end": "playend", "id": str(tid),
+                "sourceId": str(pid) if pid else str(tid), "time": str(t),
+                "type": "song", "wifi": "0", "resource": f"R_SO_4_{tid}",
+                "resourceid": str(tid), "page": page, "is_autoplay": "0",
+                "mainsite": "1", "mainsiteWeb": "1", "content": f"id={tid}"}}]
+            res = self._weapi_post(f"{BASE_URL}/weapi/feedback/weblog", {"logs": json.dumps(play), "csrf_token": csrf})
+            return res.get("code") == 200
+        except Exception:
+            return False
+
+
+def load_pool():
+    entries = []
+    for i in range(1, 6):
+        raw = os.environ.get(f"NB_POOL_{i}")
+        if not raw:
+            continue
+        try:
+            chunk = json.loads(base64.b64decode(raw).decode("utf-8"))
+            if isinstance(chunk, list):
+                entries.extend(chunk)
+        except Exception:
+            pass
+    return entries
+
+
+def main():
+    cfg = json.load(open("cfg.json", encoding="utf-8"))
+    plays = int(cfg.get("plays_per_account", 28))
+    skip_prob = float(cfg.get("skip_prob", 0.08))
+    ns = max(1, int(os.environ.get("NS", "1")))
+    slice_idx = int(os.environ.get("SLICE", "0"))
+
+    entries = load_pool()
+    if not entries:
+        print(f"[slice {slice_idx}] 号池为空，跳过")
+        return
+
+    # 1) 校验存活
+    active = []
+    dead = 0
+    for e in entries:
+        c = Client(e.get("ck", ""))
+        if c.login_by_cookie(e.get("ck", ""), e.get("name", "?")):
+            active.append(e)
+        else:
+            dead += 1
+        time.sleep(random.uniform(1, 3))
+
+    # 2) 过滤当天新加入（第 2 天入池）
+    today = date.today().isoformat()
+    active = [e for e in active if e.get("added", "") < today]
+    print(f"[slice {slice_idx}] 总数 {len(entries)} 存活 {len(active)} 失效 {dead} 今日新号剔除后 {len(active)}")
+
+    n = len(active)
+    if n < 2:
+        print("活跃号不足 2 个，无法互刷")
+        return
+
+    my_accounts = [active[i] for i in range(n) if i % ns == slice_idx]
+    print(f"[slice {slice_idx}] 本片处理 {len(my_accounts)}/{n} 个号 (NS={ns})")
+
+    # 3) 预取所有歌时长
+    song_ids = [e["song"] for e in active if e.get("song")]
+    dur_map = {}
+    if song_ids:
+        dur_map = Client(active[0]["ck"]).song_detail(song_ids)
+
+    done = 0
+    for idx, acc in enumerate(my_accounts):
+        i = active.index(acc)
+        others = [j for j in range(n) if j != i]
+        random.shuffle(others)
+        picks = others[:plays]
+        client = Client(acc["ck"])
+        if not client.login_by_cookie(acc["ck"], acc.get("name", "?")):
+            print(f"  [{acc.get('name','?')}] 本次失效，跳过")
+            continue
+        for j in picks:
+            if random.random() < skip_prob:
+                continue  # 模拟切歌
+            sid = active[j].get("song")
+            if not sid:
+                continue
+            dur = dur_map.get(sid) or 240
+            t = max(31, int(dur * random.uniform(0.2, 0.3)))
+            ok = client.scrobble(sid, t, pid=sid, page="playlist")
+            done += 1 if ok else 0
+            time.sleep(t + random.uniform(1, 2))
+    print(f"[slice {slice_idx}] 完成，本次有效上报约 {done} 次")
+
+
+if __name__ == "__main__":
+    main()

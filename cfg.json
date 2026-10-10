@@ -1,0 +1,5 @@
+{
+  "plays_per_account": 28,
+  "skip_prob": 0.08,
+  "note": "运行参数。plays_per_account = 每个账号每天听几首别人的歌（绝不听自己的）。"
+}

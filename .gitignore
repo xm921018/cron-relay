@@ -1,0 +1,10 @@
+# 本地/敏感
+*.local
+.env
+.env.*
+secrets.*
+*.log
+diag_logs/
+__pycache__/
+*.pyc
+.DS_Store
