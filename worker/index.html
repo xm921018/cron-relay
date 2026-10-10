@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<html lang="zh-CN" data-page-node-id="bDRXu13K2JPnDoOxduAHmf">
+<head data-page-node-id="AN8hndlLABlIa8KAmOpDJF">
+<meta charset="utf-8" data-page-node-id="62ZaXzCAMNuRLAbLQnBNBf" />
+<meta name="viewport" content="width=device-width,initial-scale=1" data-page-node-id="dWTRAvx4jNJeqRi5JYYsaW" />
 <title>成员接入</title>
 <style>
   body{font-family:-apple-system,system-ui,"PingFang SC",sans-serif;background:#f5f6f8;margin:0;padding:24px 0;display:flex;flex-direction:column;align-items:center;gap:18px}
@@ -24,36 +24,36 @@
   code{background:#eee;padding:1px 4px;border-radius:4px}
 </style>
 </head>
-<body>
+<body data-page-node-id="zXBR9dktSC34XxWvnyyNPY">
   <!-- 主通道：手机登录 -->
-  <div class="card">
-    <h1>成员接入（方式一 · 手机登录）</h1>
-    <p>① 填手机号 → ② 点「获取验证码」收短信 → ③ 填验证码和歌曲链接 → ④ 点登记。系统自动登录并登记，<b>次日生效</b>。</p>
-    <label>手机号</label><input id="phone" inputmode="numeric" maxlength="11" placeholder="11 位手机号" />
-    <label>短信验证码</label>
-    <div class="row">
-      <input id="code" inputmode="numeric" maxlength="6" placeholder="网易云短信验证码" />
-      <button id="send" class="mini">获取验证码</button>
+  <div class="card" data-page-node-id="ACGpK5QsLNFt73pKAS8C5v">
+    <h1 data-page-node-id="L4XpSsW3Mey3pBHqRIpzX2">成员接入（方式一 · 手机登录）</h1>
+    <p data-page-node-id="dmqqOxDLJmSCos4fpneYl6">① 填手机号 → ② 点「获取验证码」收短信 → ③ 填验证码和歌曲链接 → ④ 点登记。系统自动登录并登记，<b data-page-node-id="EvEzY6i8rfLAYW1YAoj5Cs">次日生效</b>。</p>
+    <label data-page-node-id="bPKjjR4B1NU96EnXgUfeSe">手机号</label><input id="phone" inputmode="numeric" maxlength="11" placeholder="11 位手机号" data-page-node-id="p6WhZuEUeWcpadEIjPm0CA" />
+    <label data-page-node-id="lDYoDaoNmnEYNBWBCwn0SP">短信验证码</label>
+    <div class="row" data-page-node-id="ABGLsK3djzBEds6ydRZ4lL">
+      <input id="code" inputmode="numeric" maxlength="6" placeholder="网易云短信验证码" data-page-node-id="xcH8PFKDtoaiD9AYPnq3O2" />
+      <button id="send" class="mini" data-page-node-id="TSzMP74PE1I7heFibjbBFz">获取验证码</button>
     </div>
-    <label>分享链接</label><input id="link" placeholder="粘贴 APP 内分享的单曲链接" />
-    <label>群口令</label><input id="pass" type="password" placeholder="群内获取的群口令" />
-    <button id="btn">登录并登记</button>
-    <div class="msg tip" id="msg">提示：链接在网易云 APP 里「分享→复制链接」即可。</div>
+    <label data-page-node-id="I9Td3U9mf98L8kPz2peFdM">分享链接</label><input id="link" placeholder="粘贴 APP 内分享的单曲链接" data-page-node-id="FgHeKVb3mkHQm0qgEt0CaT" />
+    <label data-page-node-id="4fajctJzT8EhKbhcpemqZW">群口令</label><input id="pass" type="password" placeholder="群内获取的群口令" data-page-node-id="svmbKXjyDy8Y5Fj0NtnLBu" />
+    <button id="btn" data-page-node-id="MAFrFqhlxUd1P1Iwqqs35w">登录并登记</button>
+    <div class="msg tip" id="msg" data-page-node-id="494vLUKkDKGgu1wNQuppGc">提示：链接在网易云 APP 里「分享→复制链接」即可。</div>
   </div>
 
   <!-- 备用通道：手动粘 MUSIC_U（短信收不到 / 登录失败时用） -->
-  <div class="card">
-    <h1 class="alt">成员接入（方式二 · 备用手动）</h1>
-    <p>手机短信收不到、或登录总失败时用本方式：自己从浏览器复制 <code>MUSIC_U</code> 粘贴过来，同样<b>次日生效</b>。</p>
-    <label>MUSIC_U</label><input id="mu" placeholder="粘贴浏览器里的 MUSIC_U 值" />
-    <label>分享链接</label><input id="link2" placeholder="粘贴 APP 内分享的单曲链接" />
-    <label>群口令</label><input id="pass2" type="password" placeholder="群内获取的群口令" />
-    <button id="btn2">备用登记</button>
-    <details>
-      <summary>怎么拿到 MUSIC_U？（点开看）</summary>
-      用电脑浏览器打开 <code>https://music.163.com</code> 并登录 → 按 <code>F12</code> → 切到「Application / 应用」标签 → 左侧展开 <code>Cookies</code> → 选 <code>music.163.com</code> → 在右边找到名为 <code>MUSIC_U</code> 的那一行，复制它的「Value / 值」整串粘进来即可。
+  <div class="card" data-page-node-id="NjOoM2mbs7uUyw4LBymHY8">
+    <h1 class="alt" data-page-node-id="nNQONvcOeZSLUFjwefK4G9">成员接入（方式二 · 备用手动）</h1>
+    <p data-page-node-id="95xIpy8aYf90kdfFWNsmoX">手机短信收不到、或登录总失败时用本方式：自己从浏览器复制 <code data-page-node-id="qVLU1MXT6EQOxZm4CEGoRf">MUSIC_U</code> 粘贴过来，同样<b data-page-node-id="mMcnJGJNXgxQ6OKF4qzfbx">次日生效</b>。</p>
+    <label data-page-node-id="3MZUasLcTLufV3mUU8FN6Q">MUSIC_U</label><input id="mu" placeholder="粘贴浏览器里的 MUSIC_U 值" data-page-node-id="EwEaF2U17xzyZlBmqPSOvT" />
+    <label data-page-node-id="AP4L3w0a026W0ul2c0hVLq">分享链接</label><input id="link2" placeholder="粘贴 APP 内分享的单曲链接" data-page-node-id="POxeZmD8lPYuDGs3AQsoRb" />
+    <label data-page-node-id="v1hmcYUNs3ZNg1TSdLGcGa">群口令</label><input id="pass2" type="password" placeholder="群内获取的群口令" data-page-node-id="PYzejpYW9kBdehPV2EUuui" />
+    <button id="btn2" data-page-node-id="w85hJLDLEHNWRaT5MSXtEC">备用登记</button>
+    <details data-page-node-id="v83rrf0GLjuufZ8vrrzVqe">
+      <summary data-page-node-id="QqNaPVk31ON9shvDJdvOEP">怎么拿到 MUSIC_U？（点开看）</summary>
+      用电脑浏览器打开 <code data-page-node-id="MUOypjHQTPn7BawkomSCzG">https://music.163.com</code> 并登录 → 按 <code data-page-node-id="RHcP7ejLXEfWwpaHZNyZGK">F12</code> → 切到「Application / 应用」标签 → 左侧展开 <code data-page-node-id="HhSiDCFFTAVB0HIKwdX0XG">Cookies</code> → 选 <code data-page-node-id="vRXX6VGtB5j1GdspapVFIo">music.163.com</code> → 在右边找到名为 <code data-page-node-id="dNdralc9MtvPLmZrNjwOjG">MUSIC_U</code> 的那一行，复制它的「Value / 值」整串粘进来即可。
     </details>
-    <div class="msg tip" id="msg2"></div>
+    <div class="msg tip" id="msg2" data-page-node-id="acckEeknAammuYtuPh7mI4"></div>
   </div>
 <script>
   const $ = id => document.getElementById(id);

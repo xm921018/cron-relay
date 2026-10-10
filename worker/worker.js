@@ -104,7 +104,7 @@ async function resolveSong(link) {
 }
 
 // ---- GitHub Secrets（sealed box） ----
-const GH = () => ({ token: GH_TOKEN, owner: GH_OWNER, repo: GH_REPO });
+const GH = () => ({ token: ENV.GH_TOKEN, owner: ENV.GH_OWNER, repo: ENV.GH_REPO });
 async function ghPublicKey() {
   const g = GH();
   const r = await fetch(`https://api.github.com/repos/${g.owner}/${g.repo}/actions/secrets/public-key`, { headers: { Authorization: `token ${g.token}`, Accept: 'application/vnd.github+json' } });
@@ -145,9 +145,9 @@ async function pushPool(entries) {
 
 async function addEntry(entry) {
   let master = [];
-  try { master = JSON.parse(await POOL.get('master') || '[]'); } catch (e) {}
+  try { master = JSON.parse(await ENV.POOL.get('master') || '[]'); } catch (e) {}
   master.push(entry);
-  await POOL.put('master', JSON.stringify(master));
+  await ENV.POOL.put('master', JSON.stringify(master));
   await pushPool(master);
 }
 
@@ -167,7 +167,7 @@ export default {
     if (url.pathname === '/api/join' && request.method === 'POST') {
       let body;
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400); }
-      if (body.pass !== GROUP_PASS) return json({ message: '群口令错误' }, 403);
+      if (body.pass !== ENV.GROUP_PASS) return json({ message: '群口令错误' }, 403);
       const login = await neteaseLogin(body.phone, body.code);
       if (!login.ok) return json({ message: login.msg }, 400);
       const song = await resolveSong(body.link);
@@ -178,7 +178,7 @@ export default {
     if (url.pathname === '/api/join_manual' && request.method === 'POST') {
       let body;
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400); }
-      if (body.pass !== GROUP_PASS) return json({ message: '群口令错误' }, 403);
+      if (body.pass !== ENV.GROUP_PASS) return json({ message: '群口令错误' }, 403);
       const mu = (body.musicU || '').trim();
       if (!mu) return json({ message: '请填写 MUSIC_U' }, 400);
       const v = await validateCookie(mu);
