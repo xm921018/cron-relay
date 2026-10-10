@@ -1516,6 +1516,37 @@ async function handle(request) {
       if (v.provisional) msg += '（注：网易校验接口暂时不可达[' + (v.diag || '') + ']，已跳过在线校验；明天任务会自动复验）';
       return json({ message: msg });
     }
+    // ---- 二维码登录通道（实测网易是否放行 CF 机房 IP）----
+    // GET /api/qr_key  → 网易申请 unikey
+    // GET /api/qr_check?key=xxx → 轮询：800过期/801等待/802已扫/803成功（成功时从 set-cookie 提取 MUSIC_U 放进 JSON 返回）
+    if (url.pathname === '/api/qr_key' && request.method === 'GET') {
+      const r = await fetch(BASE + '/api/login/qrcode/unikey', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA, 'Referer': BASE + '/' },
+        body: 'type=1',
+      });
+      const text = await r.text();
+      return new Response(text, { status: r.status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
+    }
+    if (url.pathname === '/api/qr_check' && request.method === 'GET') {
+      const key = (url.searchParams.get('key') || '').trim();
+      if (!key) return json({ message: '缺少 key' }, 400);
+      const r = await fetch(BASE + '/api/login/qrcode/client/login?key=' + encodeURIComponent(key) + '&type=1', {
+        headers: { 'User-Agent': UA, 'Referer': BASE + '/' },
+      });
+      const text = await r.text();
+      let out = text;
+      try {
+        const j = JSON.parse(text);
+        if (j.code === 803) {
+          const sc = r.headers.get('set-cookie') || '';
+          const m = sc.match(/MUSIC_U=([^;]+)/);
+          j.musicU = m ? m[1] : '';
+          out = JSON.stringify(j);
+        }
+      } catch (e) { /* 非 JSON（被风控页拦截）原样返回，前端据此判失败 */ }
+      return new Response(out, { status: r.status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
+    }
     // 隐藏管理接口：用群口令保护，从 KV 主表重新把 NB_POOL_1..5 推回 GitHub Secrets（KV 丢失/Secrets 异常时一键恢复）
     if (url.pathname === '/api/resync' && request.method === 'POST') {
       let body;
