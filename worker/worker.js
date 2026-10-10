@@ -1213,16 +1213,28 @@ async function aesCbc(dataU8, keyStr) {
   const ct = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: utf8(VI) }, key, pad);
   return new Uint8Array(ct);
 }
+// weapi 标准实现（2026-10-10 实测修复）：
+//   json → AES(NONCE) → base64 → AES(随机16字符key) → base64 = params
+//   encSecKey = RSA(随机key 反转后按 ASCII 转 hex, e=010001) 转 hex 补零到 256 位
+// 旧实现漏了中间 base64 且 encSecKey 固定不匹配，导致网易解不开、返回空 200。
+const RSA_MODULUS = '00e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ecbda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe4875d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7';
+function modPow(b, e, m) { let r = 1n; b %= m; while (e > 0n) { if (e & 1n) r = r * b % m; b = b * b % m; e >>= 1n; } return r; }
 async function weapi(data) {
+  const chars = '0123456789abcdef';
+  const rnd = [...crypto.getRandomValues(new Uint8Array(16))].map(x => chars[x % 16]).join('');
   let p = await aesCbc(utf8(JSON.stringify(data)), NONCE);
-  p = await aesCbc(p, SECRET);
-  return { params: b64enc(p), encSecKey: ENCSEC };
+  p = b64enc(p);
+  p = await aesCbc(utf8(p), rnd);
+  const rev = rnd.split('').reverse().join('');
+  const hexOfAscii = [...rev].map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+  const encSecKey = modPow(BigInt('0x' + hexOfAscii), 0x10001n, BigInt('0x' + RSA_MODULUS)).toString(16).padStart(256, '0');
+  return { params: b64enc(p), encSecKey };
 }
 
 async function neteaseSendCode(phone) {
   try {
-    const body = await weapi({ phone, ctcode: '86' });
-    const r = await fetch(`${BASE}/weapi/captcha/sent`, {
+    const body = await weapi({ cellphone: phone, ctcode: '86' });
+    const r = await fetch(`${BASE}/weapi/sms/captcha/sent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA, Referer: BASE + '/', Origin: BASE },
       body: new URLSearchParams(body).toString(),
@@ -1271,10 +1283,10 @@ async function validateCookie(musicU) {
   let lastDiag = '';
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const r = await fetch(`${BASE}/weapi/w/nuser/account/get`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA, Referer: BASE + '/', Origin: BASE, 'Cookie': ck },
-        body: new URLSearchParams(await weapi({})).toString(),
+      // 普通接口（非 weapi）：带 cookie 直接查账号，2026-10-10 实测返回 JSON
+      const r = await fetch(`${BASE}/api/nuser/account/get`, {
+        method: 'GET',
+        headers: { 'User-Agent': UA, Referer: BASE + '/', 'Cookie': ck },
       });
       const txt = await r.text();
       let j = null;
