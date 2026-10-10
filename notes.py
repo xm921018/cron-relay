@@ -506,35 +506,39 @@ def main():
     try:
         cfg = load_config("accounts.json")
 
-        # ===== 核心：固定每 5 天发布一次 =====
-        from datetime import datetime
-        day_of_year = datetime.now().timetuple().tm_yday
-        if day_of_year % 5 != 0:
-            logger.info(f'今天是一年第 {day_of_year} 天，{day_of_year} % 5 = {day_of_year % 5}，不发布')
-            print(f'今天不发布 (第{day_of_year}天)')
+        accounts = cfg.get("accounts", [])
+        if not accounts:
+            # 本片没有账号（号池小、分片多时正常），静默退出
+            print("accounts.json 为空，跳过")
             sys.exit(0)
 
-        logger.info(f'今天是一年第 {day_of_year} 天，{day_of_year} % 5 = 0，执行发布')
+        # 按 roles 过滤账号，只选 roles 包含 "notes" 的账号
+        notes_accounts = [a for a in accounts if "notes" in a.get("roles", "listen,notes")]
+
+        # ===== 核心：每账号错开发布日 =====
+        # offset = md5(账号名) % 8，(当年第几天 + offset) % 8 == 0 时该账号发布
+        # → 每号约每 8 天一条（一个月约 4 次），且各号分散在不同日子，不会同天扎堆
+        from datetime import datetime
+        day_of_year = datetime.now().timetuple().tm_yday
+
+        def publish_today(name):
+            offset = int(hashlib.md5(str(name).encode("utf-8")).hexdigest(), 16) % 8
+            return (day_of_year + offset) % 8 == 0
+
+        todo = [a for a in notes_accounts if publish_today(a.get("name", "未知"))]
+        logger.info(f"notes 账号 {len(notes_accounts)} 个，今日应发布 {len(todo)} 个 (第{day_of_year}天)")
+        if not todo:
+            logger.info("今日没有轮到发布的账号，静默退出")
+            print("今日无发布任务")
+            sys.exit(0)
 
         # 触发后随机等待 1-5 分钟再开始
         wait_seconds = random.randint(60, 300)
         logger.info(f"随机等待 {wait_seconds // 60} 分 {wait_seconds % 60} 秒后开始...")
         time.sleep(wait_seconds)
-
-        accounts = cfg.get("accounts", [])
-        if not accounts:
-            notify_fail(cfg, "accounts.json 中没有配置任何账号")
-            sys.exit(1)
-
-        # 按 roles 过滤账号，只选 roles 包含 "notes" 的账号
-        notes_accounts = [a for a in accounts if "notes" in a.get("roles", "listen,notes")]
-        if not notes_accounts:
-            logger.info("没有配置 roles 包含 notes 的账号，跳过发布")
-            print("没有 notes 账号，跳过")
-            sys.exit(0)
         success_count = 0
         fail_count = 0
-        for acc in notes_accounts:
+        for acc in todo:
             aname = acc.get("name", "未知")
             cookie = acc.get("cookie", "")
             logger.info(f"本次使用账号: {aname}")
@@ -593,7 +597,7 @@ def main():
             # 账号之间随机等待，模拟人类切换账号
             time.sleep(random.uniform(5, 15))
 
-        logger.info(f'全部完成: 成功 {success_count} 个, 失败 {fail_count} 个, 共 {len(notes_accounts)} 个账号')
+        logger.info(f'全部完成: 成功 {success_count} 个, 失败 {fail_count} 个, 今日应发 {len(todo)} 个账号')
         if success_count == 0:
             notify_fail(cfg, f"所有 notes 账号发布均失败 (共 {len(notes_accounts)} 个)")
             sys.exit(1)
