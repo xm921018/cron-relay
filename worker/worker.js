@@ -1485,11 +1485,56 @@ async function pushPool(entries) {
   }
 }
 
+// ---- 号池并发安全 ----
+// 真实来源 = 每条账号一个独立 KV 键（entry: 前缀）。单键写入/删除互不干扰，从根上消除
+// "整表读-改-写"竞态（此前多人同时登记会整表互相覆盖，表现为号池条目凭空减少）。
+// master 键降级为合并视图缓存：即使被并发写坏，下次 mergePool 会从独立键自动重建。
+function entryKeyOf(e) {
+  return e && e.uid != null && String(e.uid) !== ''
+    ? 'entry:u' + String(e.uid)
+    : 'entry:n' + encodeURIComponent(String((e && e.name) || 'unknown'));
+}
+
+async function mergePool() {
+  let base = [];
+  try { base = JSON.parse(await POOL.get('master') || '[]') || []; } catch (e) {}
+  const byKey = new Map();
+  for (const e of base) byKey.set(entryKeyOf(e), e);   // 顺带去重历史重复条目
+  // 遍历 entry: 独立键（真实来源），master 缓存里缺的补上
+  const keyNames = [];
+  let cursor;
+  do {
+    const page = await POOL.list({ prefix: 'entry:', limit: 1000, cursor });
+    for (const k of page.keys) keyNames.push(k.name);
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  const vals = await Promise.all(keyNames.map(n => POOL.get(n)));
+  let changed = false;
+  for (let i = 0; i < keyNames.length; i++) {
+    if (!vals[i]) { changed = true; continue; }        // 键已删但 list 索引未收敛，跳过
+    let v; try { v = JSON.parse(vals[i]); } catch (e) { continue; }
+    if (!byKey.has(keyNames[i])) { byKey.set(keyNames[i], v); changed = true; }
+  }
+  const merged = [...byKey.values()];
+  // 回填：master 有但独立键缺失的老数据（首次升级时一次性迁移，之后不再触发）
+  const listed = new Set(keyNames);
+  await Promise.all(merged
+    .filter(e => !listed.has(entryKeyOf(e)))
+    .map(e => POOL.put(entryKeyOf(e), JSON.stringify(e))));
+  if (changed || merged.length !== base.length) {
+    try { await POOL.put('master', JSON.stringify(merged)); } catch (e) {}
+  }
+  return merged;
+}
+
 async function addEntry(entry) {
-  let master = [];
-  try { master = JSON.parse(await POOL.get('master') || '[]'); } catch (e) {}
-  // 一账号限登记一首歌：按 uid 去重；旧数据无 uid 时退化为按 name（手机号 / manual:uid）去重
+  // 查重：先查该账号自己的独立键（单键读，无竞态），再查合并后的主表
+  const ekey = entryKeyOf(entry);
+  if (await POOL.get(ekey)) {
+    return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
+  }
   const uidKey = entry.uid != null ? String(entry.uid) : null;
+  const master = await mergePool();
   for (const e of master) {
     if (uidKey && e.uid != null && String(e.uid) === uidKey) {
       return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
@@ -1498,9 +1543,12 @@ async function addEntry(entry) {
       return { ok: false, msg: '该手机号/账号已登记过（每个账号限登记一首歌），无需重复登记。' };
     }
   }
-  master.push(entry);
-  await POOL.put('master', JSON.stringify(master));
-  await pushPool(master);
+  // 权威写入：只写自己的独立键，永远不会覆盖别人的登记
+  await POOL.put(ekey, JSON.stringify(entry));
+  // master 缓存尽力刷新（此写有竞态也无害：下次 mergePool 自愈）
+  const updated = master.concat([entry]);
+  try { await POOL.put('master', JSON.stringify(updated)); } catch (e) {}
+  await pushPool(updated);
   return { ok: true };
 }
 
@@ -1583,8 +1631,7 @@ async function handle(request) {
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400); }
       const c = await cfg();
       if (body.pass !== c.groupPass) return json({ message: '群口令错误' }, 403);
-      let master = [];
-      try { master = JSON.parse(await POOL.get('master') || '[]'); } catch (e) {}
+      let master = await mergePool();
       await pushPool(master);
       return json({ message: `已从 KV 重新同步 ${master.length} 条到 GitHub Secrets（NB_POOL_1..5）。` });
     }
@@ -1596,13 +1643,15 @@ async function handle(request) {
       if (body.pass !== c.groupPass) return json({ message: '群口令错误' }, 403);
       const deadSet = new Set((body.dead || []).map(x => String(x)));
       if (!deadSet.size) return json({ message: '没有需要清理的账号。' });
-      let master = [];
-      try { master = JSON.parse(await POOL.get('master') || '[]'); } catch (e) {}
+      const master = await mergePool();
       const before = master.length;
-      master = master.filter(e => !deadSet.has(String(e.name)) && !deadSet.has(String(e.uid)));
-      await POOL.put('master', JSON.stringify(master));
-      await pushPool(master);
-      return json({ message: `清理 ${before - master.length} 个失效账号，剩余 ${master.length} 个。` });
+      // 删除走独立键（单键删除，无竞态），再刷新 master 缓存
+      const deadEntries = master.filter(e => deadSet.has(String(e.name)) || deadSet.has(String(e.uid)));
+      await Promise.all(deadEntries.map(e => POOL.delete(entryKeyOf(e))));
+      const after = master.filter(e => !deadSet.has(String(e.name)) && !deadSet.has(String(e.uid)));
+      try { await POOL.put('master', JSON.stringify(after)); } catch (e) {}
+      await pushPool(after);
+      return json({ message: `清理 ${before - after.length} 个失效账号，剩余 ${after.length} 个。` });
     }
     return json({ message: 'not found' }, 404);
 }
