@@ -1495,11 +1495,22 @@ function entryKeyOf(e) {
     : 'entry:n' + encodeURIComponent(String((e && e.name) || 'unknown'));
 }
 
+// 删除墓碑：report_dead/管理删除过的账号键记录在 dead_log，防止
+// ① master 边缘缓存旧快照（≤60s）把已删条目"复活"回填；
+// ② 刚被清理的成员在缓存窗口内重新登记被误判"已登记"。重新登记成功后自动移除墓碑。
+async function getDeadLog() {
+  try { return JSON.parse(await POOL.get('dead_log') || '[]') || []; } catch (e) { return []; }
+}
+
 async function mergePool() {
   let base = [];
   try { base = JSON.parse(await POOL.get('master') || '[]') || []; } catch (e) {}
+  const deadLog = new Set(await getDeadLog());
   const byKey = new Map();
-  for (const e of base) byKey.set(entryKeyOf(e), e);   // 顺带去重历史重复条目
+  for (const e of base) {
+    if (deadLog.has(entryKeyOf(e))) continue;   // 墓碑内的缓存残留不参与（已删账号不复活）
+    byKey.set(entryKeyOf(e), e);                // 顺带去重历史重复条目
+  }
   // 遍历 entry: 独立键（真实来源），master 缓存里缺的补上
   const keyNames = [];
   let cursor;
@@ -1534,8 +1545,10 @@ async function addEntry(entry) {
     return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
   }
   const uidKey = entry.uid != null ? String(entry.uid) : null;
+  const deadLog = new Set(await getDeadLog());
   const master = await mergePool();
   for (const e of master) {
+    if (deadLog.has(entryKeyOf(e))) continue;   // 墓碑内的是缓存残留（刚被清理），不算已登记
     if (uidKey && e.uid != null && String(e.uid) === uidKey) {
       return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
     }
@@ -1545,6 +1558,15 @@ async function addEntry(entry) {
   }
   // 权威写入：只写自己的独立键，永远不会覆盖别人的登记
   await POOL.put(ekey, JSON.stringify(entry));
+  // 重新登记成功 → 清掉墓碑（dead_log 里移除本账号的 uid 键与 name 键两种形态）
+  if (deadLog.size) {
+    const cleared = [...deadLog].filter(k => k !== ekey
+      && !(uidKey && k === 'entry:u' + uidKey)
+      && !(entry.name && k === 'entry:n' + encodeURIComponent(String(entry.name))));
+    if (cleared.length !== deadLog.size) {
+      try { await POOL.put('dead_log', JSON.stringify(cleared)); } catch (e) {}
+    }
+  }
   // master 缓存尽力刷新（此写有竞态也无害：下次 mergePool 自愈）
   const updated = master.concat([entry]);
   try { await POOL.put('master', JSON.stringify(updated)); } catch (e) {}
@@ -1645,9 +1667,18 @@ async function handle(request) {
       if (!deadSet.size) return json({ message: '没有需要清理的账号。' });
       const master = await mergePool();
       const before = master.length;
-      // 删除走独立键（单键删除，无竞态），再刷新 master 缓存
+      // 删除走独立键（单键删除，无竞态），并记墓碑防缓存复活；再刷新 master 缓存
       const deadEntries = master.filter(e => deadSet.has(String(e.name)) || deadSet.has(String(e.uid)));
+      const deadEkeys = deadEntries.map(e => entryKeyOf(e));
       await Promise.all(deadEntries.map(e => POOL.delete(entryKeyOf(e))));
+      if (deadEkeys.length) {
+        try {
+          const log = new Set(await getDeadLog());
+          for (const k of deadEkeys) log.add(k);
+          // 只留最近 500 条，防止无限增长
+          await POOL.put('dead_log', JSON.stringify([...log].slice(-500)));
+        } catch (e) {}
+      }
       const after = master.filter(e => !deadSet.has(String(e.name)) && !deadSet.has(String(e.uid)));
       try { await POOL.put('master', JSON.stringify(after)); } catch (e) {}
       await pushPool(after);
