@@ -1,15 +1,19 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-page-node-id="bDRXu13K2JPnDoOxduAHmf">
-<head data-page-node-id="AN8hndlLABlIa8KAmOpDJF">
-<meta charset="utf-8" data-page-node-id="62ZaXzCAMNuRLAbLQnBNBf" />
-<meta name="viewport" content="width=device-width,initial-scale=1" data-page-node-id="dWTRAvx4jNJeqRi5JYYsaW" />
+<html lang="zh-CN" data-page-node-id="KvaqIaFY3BZGYDuEVrkDfF">
+<head data-page-node-id="gVnqLhWNwArV3gwmdG2mXX">
+<meta charset="utf-8" data-page-node-id="dJOellFfJynWgCZNiwA4wm">
+<meta name="viewport" content="width=device-width,initial-scale=1" data-page-node-id="SL1x3sjvgOU0mf3HLJXOsG">
 <title>成员接入</title>
 <style>
-  body{font-family:-apple-system,system-ui,"PingFang SC",sans-serif;background:#f5f6f8;margin:0;padding:24px 0;display:flex;flex-direction:column;align-items:center;gap:18px}
-  .card{background:#fff;padding:28px 24px;border-radius:14px;width:330px;box-shadow:0 2px 12px rgba(0,0,0,.08)}
-  h1{font-size:18px;margin:0 0 4px}
+  body{font-family:-apple-system,system-ui,"PingFang SC",sans-serif;background:#f5f6f8;margin:0;padding:24px 12px;display:flex;flex-direction:column;align-items:center;gap:16px}
+  .head{text-align:center;margin-bottom:2px}
+  .page-title{font-size:20px;font-weight:600;color:#3b6d11;margin:0}
+  .page-sub{font-size:13px;color:#666;margin:6px 0 0}
+  .wrap{display:flex;flex-wrap:wrap;gap:18px;justify-content:center;width:100%;max-width:740px}
+  .card{background:#fff;padding:26px 22px;border-radius:14px;width:330px;box-sizing:border-box;box-shadow:0 2px 12px rgba(0,0,0,.08)}
+  h1{font-size:17px;margin:0 0 4px}
   h1.alt{color:#b06a00}
-  p{font-size:13px;color:#666;margin:0 0 18px;line-height:1.5}
+  p{font-size:13px;color:#666;margin:0 0 16px;line-height:1.5}
   label{display:block;font-size:13px;margin:12px 0 4px;color:#333}
   input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:14px}
   .row{display:flex;gap:8px}
@@ -24,36 +28,39 @@
   code{background:#eee;padding:1px 4px;border-radius:4px}
 </style>
 </head>
-<body data-page-node-id="zXBR9dktSC34XxWvnyyNPY">
-  <!-- 主通道：手机登录 -->
-  <div class="card" data-page-node-id="ACGpK5QsLNFt73pKAS8C5v">
-    <h1 data-page-node-id="L4XpSsW3Mey3pBHqRIpzX2">成员接入（方式一 · 手机登录）</h1>
-    <p data-page-node-id="dmqqOxDLJmSCos4fpneYl6">① 填手机号 → ② 点「获取验证码」收短信 → ③ 填验证码和歌曲链接 → ④ 点登记。系统自动登录并登记，<b data-page-node-id="EvEzY6i8rfLAYW1YAoj5Cs">次日生效</b>。</p>
-    <label data-page-node-id="bPKjjR4B1NU96EnXgUfeSe">手机号</label><input id="phone" inputmode="numeric" maxlength="11" placeholder="11 位手机号" data-page-node-id="p6WhZuEUeWcpadEIjPm0CA" />
-    <label data-page-node-id="lDYoDaoNmnEYNBWBCwn0SP">短信验证码</label>
-    <div class="row" data-page-node-id="ABGLsK3djzBEds6ydRZ4lL">
-      <input id="code" inputmode="numeric" maxlength="6" placeholder="网易云短信验证码" data-page-node-id="xcH8PFKDtoaiD9AYPnq3O2" />
-      <button id="send" class="mini" data-page-node-id="TSzMP74PE1I7heFibjbBFz">获取验证码</button>
-    </div>
-    <label data-page-node-id="I9Td3U9mf98L8kPz2peFdM">分享链接</label><input id="link" placeholder="粘贴 APP 内分享的单曲链接" data-page-node-id="FgHeKVb3mkHQm0qgEt0CaT" />
-    <label data-page-node-id="4fajctJzT8EhKbhcpemqZW">群口令</label><input id="pass" type="password" placeholder="群内获取的群口令" data-page-node-id="svmbKXjyDy8Y5Fj0NtnLBu" />
-    <button id="btn" data-page-node-id="MAFrFqhlxUd1P1Iwqqs35w">登录并登记</button>
-    <div class="msg tip" id="msg" data-page-node-id="494vLUKkDKGgu1wNQuppGc">提示：链接在网易云 APP 里「分享→复制链接」即可。</div>
+<body data-page-node-id="3cyqlfWc7lWNrs64dHosXy">
+  <div class="head" data-page-node-id="EqLzTyKsOSLXap0Fvosltq">
+    <h1 class="page-title" data-page-node-id="UUu5sKdpK36Ny3Oo14OkEE">成员接入</h1>
+    <p class="page-sub" data-page-node-id="4ZFCX0VUqazGkxTGi2EHFt">选择一种方式登记：左侧手机登录，右侧备用手动</p>
   </div>
+  <div class="wrap" data-page-node-id="L0lRhuEunDQ3xEHBtEJbpJ">
+    <!-- 主通道：手机登录 -->
+    <div class="card" data-page-node-id="Yktii8dTIe7IYnfvtGwX9l">
+      <h1 data-page-node-id="WA43UbMcjgaNXIlKzUmA8A">成员接入（方式一 · 手机登录）</h1>
+      <p data-page-node-id="m9ZbF9Lj5BudRvpMzouKQ9">① 填手机号 → ② 点「获取验证码」收短信 → ③ 填验证码和歌曲链接 → ④ 点登记。系统自动登录并登记，<b data-page-node-id="NFUg1AQyD0YnpyqNVP7gC8">次日生效</b>。</p>
+      <label data-page-node-id="4QPHrE4euxIoa2yBdvGpvA">手机号</label><input id="phone" inputmode="numeric" maxlength="11" placeholder="11 位手机号" data-page-node-id="nCLr2nnSBVbWAg972mFGEi">
+      <label data-page-node-id="IbptcjD3kYGLozHrQlZzl5">短信验证码</label>
+      <div class="row" data-page-node-id="Y29WAJdc1QOsL5D6PC6YQ5"><input id="code" inputmode="numeric" maxlength="6" placeholder="网易云短信验证码" data-page-node-id="oaJZKLhwjKZ1pSCk5tWTI9"><button id="send" class="mini" data-page-node-id="i7yi37ZgsXJ9El4wzOx0LT">获取验证码</button></div>
+      <label data-page-node-id="mMQVvu3HT6FlNffHIChVgp">分享链接</label><input id="link" placeholder="粘贴 APP 内分享的单曲链接" data-page-node-id="pNcSYJG3SAFAMXg5uDvH18">
+      <label data-page-node-id="fiGiqWZraBB7kDvw7AUPE4">群口令</label><input id="pass" type="password" placeholder="群内获取的群口令" data-page-node-id="5opA915hBXWwjABW2IhBuo">
+      <button id="btn" data-page-node-id="QbFE8fK5g4I6SFCHtMi43P">登录并登记</button>
+      <div class="msg tip" id="msg" data-page-node-id="J4FbAhAZedxDtqcFUBGJiq">提示：链接在网易云 APP 里「分享→复制链接」即可。</div>
+    </div>
 
-  <!-- 备用通道：手动粘 MUSIC_U（短信收不到 / 登录失败时用） -->
-  <div class="card" data-page-node-id="NjOoM2mbs7uUyw4LBymHY8">
-    <h1 class="alt" data-page-node-id="nNQONvcOeZSLUFjwefK4G9">成员接入（方式二 · 备用手动）</h1>
-    <p data-page-node-id="95xIpy8aYf90kdfFWNsmoX">手机短信收不到、或登录总失败时用本方式：自己从浏览器复制 <code data-page-node-id="qVLU1MXT6EQOxZm4CEGoRf">MUSIC_U</code> 粘贴过来，同样<b data-page-node-id="mMcnJGJNXgxQ6OKF4qzfbx">次日生效</b>。</p>
-    <label data-page-node-id="3MZUasLcTLufV3mUU8FN6Q">MUSIC_U</label><input id="mu" placeholder="粘贴浏览器里的 MUSIC_U 值" data-page-node-id="EwEaF2U17xzyZlBmqPSOvT" />
-    <label data-page-node-id="AP4L3w0a026W0ul2c0hVLq">分享链接</label><input id="link2" placeholder="粘贴 APP 内分享的单曲链接" data-page-node-id="POxeZmD8lPYuDGs3AQsoRb" />
-    <label data-page-node-id="v1hmcYUNs3ZNg1TSdLGcGa">群口令</label><input id="pass2" type="password" placeholder="群内获取的群口令" data-page-node-id="PYzejpYW9kBdehPV2EUuui" />
-    <button id="btn2" data-page-node-id="w85hJLDLEHNWRaT5MSXtEC">备用登记</button>
-    <details data-page-node-id="v83rrf0GLjuufZ8vrrzVqe">
-      <summary data-page-node-id="QqNaPVk31ON9shvDJdvOEP">怎么拿到 MUSIC_U？（点开看）</summary>
-      用电脑浏览器打开 <code data-page-node-id="MUOypjHQTPn7BawkomSCzG">https://music.163.com</code> 并登录 → 按 <code data-page-node-id="RHcP7ejLXEfWwpaHZNyZGK">F12</code> → 切到「Application / 应用」标签 → 左侧展开 <code data-page-node-id="HhSiDCFFTAVB0HIKwdX0XG">Cookies</code> → 选 <code data-page-node-id="vRXX6VGtB5j1GdspapVFIo">music.163.com</code> → 在右边找到名为 <code data-page-node-id="dNdralc9MtvPLmZrNjwOjG">MUSIC_U</code> 的那一行，复制它的「Value / 值」整串粘进来即可。
-    </details>
-    <div class="msg tip" id="msg2" data-page-node-id="acckEeknAammuYtuPh7mI4"></div>
+    <!-- 备用通道：手动粘 MUSIC_U（短信收不到 / 登录失败时用） -->
+    <div class="card" data-page-node-id="IlrIFq7S24q13aPJmYg8C3">
+      <h1 class="alt" data-page-node-id="awnWj1Ha2IeB0pLldSOgW6">成员接入（方式二 · 备用手动）</h1>
+      <p data-page-node-id="9RQH6Du7qDaL8bNC4IoNoO">手机短信收不到、或登录总失败时用本方式：自己从浏览器复制 <code data-page-node-id="qnFxCj7GUl3sElySpj15qS">MUSIC_U</code> 粘贴过来，同样<b data-page-node-id="wtOtk5rvpoo3HdXSHhUTNp">次日生效</b>。</p>
+      <label data-page-node-id="y5k22VmuQCqyf4TKNXTiOe">MUSIC_U</label><input id="mu" placeholder="粘贴浏览器里的 MUSIC_U 值" data-page-node-id="kvnBmsSeUJa1ZWkwbf3Qpn">
+      <label data-page-node-id="dgjFXDGTy0F1GRZMosl91A">分享链接</label><input id="link2" placeholder="粘贴 APP 内分享的单曲链接" data-page-node-id="iD1UM6jGPTBM51ryT44p2j">
+      <label data-page-node-id="qQNd9oRuXcbbjxCdl0M1fc">群口令</label><input id="pass2" type="password" placeholder="群内获取的群口令" data-page-node-id="qrrez2LIr3BeBvNiEc6B7T">
+      <button id="btn2" data-page-node-id="ORR56pNZ8xoSvfTpEGcsTE">备用登记</button>
+      <details data-page-node-id="IVCwf3zNgMlYp0Yud4D5fG">
+        <summary data-page-node-id="UL6Sy1lKhSXDqlaV7HuW1z">怎么拿到 MUSIC_U？（点开看）</summary>
+        用电脑浏览器打开 <code data-page-node-id="VL7Z6QmmeyGSD3cXlalC5Z">https://music.163.com</code> 并登录 → 按 <code data-page-node-id="sXhHIz48g96VJ22ZxyXU06">F12</code> → 切到「Application / 应用」标签 → 左侧展开 <code data-page-node-id="LSuV4kPB2rEbKBHFDiBleV">Cookies</code> → 选 <code data-page-node-id="EFI4jPYSPFfjXZbRs7WL8N">music.163.com</code> → 在右边找到名为 <code data-page-node-id="Ic28TB6b0zaG59cAX5pzG1">MUSIC_U</code> 的那一行，复制它的「Value / 值」整串粘进来即可。
+      </details>
+      <div class="msg tip" id="msg2" data-page-node-id="GQMVrj3FHmYkkRsfBwS6ll"></div>
+    </div>
   </div>
 <script>
   const $ = id => document.getElementById(id);
