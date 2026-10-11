@@ -14,4 +14,5 @@ __pycache__/
 cloudflare-*.txt
 token*.txt
 *.token
+*口令*.txt
 
