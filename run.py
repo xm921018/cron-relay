@@ -100,10 +100,15 @@ class Client:
             self.nickname = prof.get("nickname")
             if info.get("code") == 200 and self.uid:
                 return True
-            # 受限会话：profile 隐藏但会话可能仍活，用每日推荐二次验证
-            rec = self._weapi_post(f"{BASE_URL}/weapi/v3/discovery/recommend/songs", {"limit": 1, "offset": 0})
-            ok = rec.get("code") == 200 and len((rec.get("data") or {}).get("dailySongs") or []) > 0
-            return ok
+            # 受限会话：profile 隐藏但会话可能仍活，用每日推荐二次验证。
+            # 注意必须用 api v1 明文接口：weapi v3 对未登录会话也返回歌单（2026-10-11 实测，
+            # 匿名/死号 v3 照样有歌 → 无区分度会把死号误判成活号）；v1 实测活号 30+ 首、死号/匿名 0 首。
+            try:
+                r1 = self.s.get(f"{BASE_URL}/api/v1/discovery/recommend/songs", timeout=20)
+                d1 = r1.json()
+                return d1.get("code") == 200 and len((d1.get("data") or {}).get("dailySongs") or []) > 0
+            except Exception:
+                return False
         except Exception:
             return False
 
