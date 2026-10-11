@@ -9,6 +9,7 @@
 3. 过滤"当天新加入"的号（added == 今天 不参与，满足第 2 天入池）。
 4. 当前 job 只处理自己分片 (i % NS == SLICE) 的账号；每个账号随机挑
    PLAYS_PER_ACCOUNT 个"别人的歌"播放，绝不播自己的歌。
+   带有 noListen 标记的号（如群主大号）只进歌池被别人听，自己不播放。
 5. 复用已验证可用的上报通道（weapi + eapi 双通道，time>=31s）。
 
 配置见 cfg.json。运行参数来自环境变量 NS / SLICE（matrix 注入）。
@@ -206,8 +207,11 @@ def main():
         print("活跃号不足 2 个，无法互刷")
         return
 
-    my_accounts = [active[i] for i in range(n) if i % ns == slice_idx]
-    print(f"[slice {slice_idx}] 本片处理 {len(my_accounts)}/{n} 个号 (NS={ns})")
+    # noListen 号（如群主大号）仍留在 active 里：它的歌继续进别人的互听歌池、CK 照常验活，
+    # 但不分配"去听别人"的播放任务 —— 只收不听。
+    my_accounts = [active[i] for i in range(n) if i % ns == slice_idx and not active[i].get("noListen")]
+    n_listen = sum(1 for e in active if e.get("noListen"))
+    print(f"[slice {slice_idx}] 本片处理 {len(my_accounts)}/{n} 个号 (NS={ns}，其中只收不听 {n_listen} 个不参与播放)")
 
     # 3) 预取所有歌时长
     song_ids = [e["song"] for e in active if e.get("song")]
