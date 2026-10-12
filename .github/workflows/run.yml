@@ -22,8 +22,8 @@ jobs:
           NB_POOL_4: ${{ secrets.NB_POOL_4 }}
           NB_POOL_5: ${{ secrets.NB_POOL_5 }}
           MIN_SLICES: '4'
-          MAX_SLICES: '30'
-          ACCOUNTS_PER_SLICE: '8'   # 单号约 35 分钟，片上限 6h，留余量
+          MAX_SLICES: '40'
+          ACCOUNTS_PER_SLICE: '6'   # 单号约 35-50 分钟（28 群内歌+6-10 热歌），6 个/片 ≈ 3.5-5h，留足 6h job 上限余量
         run: |
           python3 - <<'EOF'
           import base64, json, os, math
@@ -79,7 +79,7 @@ jobs:
         run: |
           N=$(python -c "import json;print(len(json.load(open('accounts.json'))['accounts']))")
           if [ "$N" -gt 0 ]; then python signin.py; else echo "本片无账号，跳过签到"; fi
-      - name: notes publish (every 5 days)
+      - name: notes publish (per-account every 6 days)
         run: |
           N=$(python -c "import json;print(len(json.load(open('accounts.json'))['accounts']))")
           if [ "$N" -gt 0 ]; then python notes.py; else echo "本片无账号，跳过笔记"; fi
