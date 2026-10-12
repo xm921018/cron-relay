@@ -4,6 +4,9 @@ name: relay-guard
 # GitHub 定时任务只会"延迟"（实测 0.5~4.5h），但偶发被跳过或失败；
 # 本工作流在每天 UTC 21:30（北京 05:30）检查当天（UTC 日）relay 是否已成功/在跑，
 # 没有则手动 dispatch 补发一次。正常情况下它什么也不做。
+#
+# 注意：Actions list-runs 的 created 日期过滤参数实测不可靠（会返回未过滤结果），
+# 因此这里拉最近 30 条在本地按 created_at 过滤，不依赖服务端过滤。
 
 on:
   schedule:
@@ -22,8 +25,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 - <<'EOF'
-          import json, os, urllib.request, urllib.error
-          from datetime import datetime, timedelta
+          import json, os, urllib.request
+          from datetime import datetime, timezone
 
           TOK = os.environ["GH_TOKEN"]
           REPO = os.environ["GITHUB_REPOSITORY"]
@@ -40,21 +43,21 @@ jobs:
                                            method="POST")
               return urllib.request.urlopen(req, timeout=30).status
 
-          # 按北京时间算"今天"：relay 定时在北京 22:23 前后（UTC 14:23）触发，
-          # 属于同一个 UTC 日；北京时间已跨天时（>08:00 UTC）以 UTC 日为准即可覆盖
-          utc_today = datetime.utcnow().strftime("%Y-%m-%d")
-          d = get(f"https://api.github.com/repos/{REPO}/actions/runs?created=>={utc_today}&per_page=50")
-          runs = [r for r in d.get("workflow_runs", []) if r.get("path") == ".github/workflows/run.yml"]
+          utc_today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+          # 拉最近 30 条（relay 每天至多 1-2 条，30 条覆盖两周以上），本地按日期过滤
+          d = get(f"https://api.github.com/repos/{REPO}/actions/runs?per_page=30")
+          runs = [r for r in d.get("workflow_runs", [])
+                  if r.get("path") == ".github/workflows/run.yml"
+                  and str(r.get("created_at", ""))[:10] == utc_today]
           succeeded = any(r.get("conclusion") == "success" for r in runs)
           running = any(r.get("status") in ("queued", "in_progress", "waiting", "pending") for r in runs)
 
           if succeeded:
-              print(f"今日 relay 已成功（{len(runs)} 条记录），无需补发")
+              print(f"今日 relay 已成功（今日记录 {len(runs)} 条），无需补发")
           elif running:
               print(f"今日 relay 正在运行，无需补发")
           else:
-              n_fail = sum(1 for r in runs if r.get("conclusion") not in ("success", None))
-              print(f"今日 relay 未成功（记录 {len(runs)} 条，其中失败 {n_fail}），补发 dispatch")
+              print(f"今日 relay 未成功（今日记录 {len(runs)} 条），补发 dispatch")
               code = post(f"https://api.github.com/repos/{REPO}/actions/workflows/run.yml/dispatches")
               print("dispatch HTTP", code)
           EOF
