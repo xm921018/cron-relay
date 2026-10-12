@@ -516,14 +516,14 @@ def main():
         notes_accounts = [a for a in accounts if "notes" in a.get("roles", "listen,notes")]
 
         # ===== 核心：每账号错开发布日 =====
-        # offset = md5(账号名) % 8，(当年第几天 + offset) % 8 == 0 时该账号发布
-        # → 每号约每 8 天一条（一个月约 4 次），且各号分散在不同日子，不会同天扎堆
+        # offset = md5(账号名) % 6，(当年第几天 + offset) % 6 == 0 时该账号发布
+        # → 每号每 6 天一条（一个月约 5 次，满足音乐人"30 天内笔记天数≥4"），且各号分散在不同日子，不会同天扎堆
         from datetime import datetime
         day_of_year = datetime.now().timetuple().tm_yday
 
         def publish_today(name):
-            offset = int(hashlib.md5(str(name).encode("utf-8")).hexdigest(), 16) % 8
-            return (day_of_year + offset) % 8 == 0
+            offset = int(hashlib.md5(str(name).encode("utf-8")).hexdigest(), 16) % 6
+            return (day_of_year + offset) % 6 == 0
 
         todo = [a for a in notes_accounts if publish_today(a.get("name", "未知"))]
         logger.info(f"notes 账号 {len(notes_accounts)} 个，今日应发布 {len(todo)} 个 (第{day_of_year}天)")
