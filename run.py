@@ -21,7 +21,7 @@ import time
 import random
 import base64
 import string
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import requests
 from Crypto.Cipher import AES
@@ -203,7 +203,9 @@ def main():
         time.sleep(random.uniform(1, 3))
 
     # 2) 过滤当天新加入（第 2 天入池）
-    today = date.today().isoformat()
+    # "今天"必须按北京时间算：runner 时区是 UTC，定时任务常被 GitHub 延迟到 UTC 晚间执行
+    # （实测延迟 4.5h），此时 UTC 日期比北京晚一天，曾导致全池被误判"当天新号"而白跑（2026-10-11 实锤）
+    today = (datetime.utcnow() + timedelta(hours=8)).date().isoformat()
     active = [e for e in active if e.get("added", "") < today]
     print(f"[slice {slice_idx}] 总数 {len(entries)} 存活 {len(active)} 失效 {dead} 今日新号剔除后 {len(active)}")
 
