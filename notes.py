@@ -4,8 +4,8 @@
 
 反检测特性：
 - 发布间隔平均 3-5 天（脚本内部掷骰子决定是否发布）
-- 固定北京时间 07:00 触发，脚本内部随机等待 1-10 分钟后开始
-- 文案从超大文案库随机选取，长度随机
+- 随 relay 每晚北京 22:23 触发，脚本内部随机等待 1-5 分钟后开始
+- 文案从超大文案库随机选取，长度随机（保底 8 字，避免截出太短的残句）
 - 图片完全随机生成（背景色、装饰、字体大小、文字位置每次都不同）
 - 操作间加入随机延迟，模拟人类行为
 - 不发布时静默退出，不发邮件
@@ -341,7 +341,9 @@ class NeteaseClient:
 # ========== 随机图片生成（每次完全不同） ==========
 
 def _pick_font(min_size=42, max_size=72):
-    """随机选字体 + 随机字号"""
+    """随机选字体 + 随机字号。
+    Windows 本地路径与 GitHub ubuntu runner 路径（fonts-arphic-uming / fonts-noto-cjk，
+    由 run.yml 的 brush job 安装）都列在这里，逐个 try，哪边能用哪边的。"""
     font_paths = [
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
@@ -350,6 +352,8 @@ def _pick_font(min_size=42, max_size=72):
         "C:/Windows/Fonts/STXINWEI.TTF",
         "C:/Windows/Fonts/FZSTK.TTF",
         "C:/Windows/Fonts/FZYBKSJW.TTF",
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     ]
     random.shuffle(font_paths)
     size = random.randint(min_size, max_size)
@@ -516,10 +520,11 @@ def main():
         notes_accounts = [a for a in accounts if "notes" in a.get("roles", "listen,notes")]
 
         # ===== 核心：每账号错开发布日 =====
-        # offset = md5(账号名) % 6，(当年第几天 + offset) % 6 == 0 时该账号发布
+        # offset = md5(账号名) % 6，(当年第几天 + offset) % 6 == 0 时该账号发布。
         # → 每号每 6 天一条（一个月约 5 次，满足音乐人"30 天内笔记天数≥4"），且各号分散在不同日子，不会同天扎堆
-        from datetime import datetime
-        day_of_year = datetime.now().timetuple().tm_yday
+        # 第几天按北京时间算（runner 是 UTC，直接用 now() 会差一天，2026-10-13 修复）
+        from datetime import datetime, timezone, timedelta
+        day_of_year = (datetime.now(timezone.utc) + timedelta(hours=8)).timetuple().tm_yday
 
         def publish_today(name):
             offset = int(hashlib.md5(str(name).encode("utf-8")).hexdigest(), 16) % 6
@@ -551,10 +556,10 @@ def main():
                 continue
             time.sleep(random.uniform(2, 8))
 
-            # 随机选文案，随机截取长度
+            # 随机选文案，随机截取长度（保底 8 字，避免截出"愿你"这种两字残句，2026-10-13 修复）
             text = random.choice(QUOTES)
-            max_len = random.randint(2, len(text))
-            text = text[:max_len]
+            if len(text) > 8:
+                text = text[:random.randint(8, len(text))]
             logger.info(f"[{aname}] 准备发布文案：{text}")
 
             # 模拟人类：想文案的时间
