@@ -1,9 +1,11 @@
 name: relay-guard
 
-# 兜底保障：relay（run.yml）每天必须跑一次。
+# 兜底保障：relay（run.yml）每天必须完整跑成功一次。
 # GitHub 定时任务只会"延迟"（实测 0.5~7.7h），但偶发被跳过或失败；
-# 本工作流每天 UTC 23:30（北京 07:30）检查最近 28 小时内 relay 是否已成功/在跑，
-# 没有则手动 dispatch 补发一次。正常情况下它什么也不做。
+# 本工作流每天 UTC 23:30（北京 07:30）检查最近 28 小时内的 relay 运行情况：
+#   在跑 / 全部成功        → 什么都不做
+#   部分片失败(failure)    → rerun-failed-jobs 只补失败的片（已成功的片不重复跑，避免播放/签到/笔记翻倍）
+#   完全没有 relay 记录    → dispatch 补发一次整班
 #
 # 历史教训（2026-10-13 修复）：
 # 1. 原版本按"当天 UTC 日期"过滤 run，但 relay 计划在 UTC 14:23，被 GitHub 延迟到
@@ -13,7 +15,11 @@ name: relay-guard
 # 2. Actions list-runs 的 created 日期过滤参数实测不可靠（会返回未过滤结果），
 #    因此这里拉最近 30 条在本地按 created_at 时间戳过滤，不依赖服务端过滤。
 # 3. 滚动窗口取 28h：relay 约 24h 一班，窗口 > 24h+最大延迟(约9h)可容忍延迟不误补，
-#    同时真丢一整天（上次成功运行已 ~33h 前）时能补上。
+#    同时真丢一整天（上次成功已在约 33h 前）时能补上。
+# 4. 原逻辑"窗口内有 success 就不补"漏掉了"部分片失败"的场景：5 片挂 2 片时 run
+#    结论是 failure，但 guard 看到窗口内有 success 的片就不动作，失败片的号当天
+#    无播放无签到无笔记。现改为：取窗口内最近一条 relay run——
+#      在跑/成功 → 不动；failure → rerun-failed-jobs 只补失败片；无记录 → dispatch。
 
 on:
   schedule:
@@ -27,7 +33,7 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      - name: check & re-dispatch relay if missing
+      - name: check & repair relay if incomplete
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -70,17 +76,30 @@ jobs:
               if created >= window_start:
                   recent.append((created, r))
           recent.sort(key=lambda x: x[0])
-          succeeded = any(r.get("conclusion") == "success" for _, r in recent)
-          running = any(r.get("status") in ("queued", "in_progress", "waiting", "pending")
-                        for _, r in recent)
-          print(f"窗口 {WINDOW_HOURS}h 内 relay 记录 {len(recent)} 条"
-                f"（最近一条 {recent[-1][0].strftime('%Y-%m-%d %H:%M UTC') if recent else '无'}）"
-                f" 成功={succeeded} 在跑={running}")
 
-          if succeeded or running:
-              print("最近 relay 已成功/在跑，无需补发")
+          if not recent:
+              print(f"窗口 {WINDOW_HOURS}h 内无 relay 记录，dispatch 补发整班")
+              print("dispatch HTTP", post(f"https://api.github.com/repos/{REPO}/actions/workflows/run.yml/dispatches"))
+              raise SystemExit(0)
+
+          _, latest = recent[-1]
+          print(f"窗口 {WINDOW_HOURS}h 内 relay 记录 {len(recent)} 条，最近一条 run {latest['id']} "
+                f"created={latest['created_at']} status={latest.get('status')} "
+                f"conclusion={latest.get('conclusion')}")
+
+          if latest.get("status") in ("queued", "in_progress", "waiting", "pending"):
+              print("最近 relay 正在运行，无需动作")
+          elif latest.get("conclusion") == "success":
+              print("最近 relay 全部成功，无需动作")
           else:
-              print("窗口内无 relay 成功/在跑记录，补发 dispatch")
-              code = post(f"https://api.github.com/repos/{REPO}/actions/workflows/run.yml/dispatches")
-              print("dispatch HTTP", code)
+              # failure/cancelled 等：只补跑失败的片，已成功的片不重跑
+              # （rerun-failed-jobs 对 cancelled 的 run 同样有效，会重跑未成功的 job）
+              print("最近 relay 未完整成功，尝试 rerun-failed-jobs 只补失败片")
+              try:
+                  code = post(f"https://api.github.com/repos/{REPO}/actions/runs/{latest['id']}/rerun-failed-jobs")
+                  print("rerun-failed-jobs HTTP", code)
+              except Exception as e:
+                  # 没有可重跑的 job 或接口异常时，退回整班 dispatch
+                  print("rerun-failed-jobs 失败，退回整班 dispatch:", str(e)[:150])
+                  print("dispatch HTTP", post(f"https://api.github.com/repos/{REPO}/actions/workflows/run.yml/dispatches"))
           EOF
