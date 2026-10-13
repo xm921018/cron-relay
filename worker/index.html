@@ -37,7 +37,7 @@
     <!-- 主通道：手机登录 -->
     <div class="card" data-page-node-id="Yktii8dTIe7IYnfvtGwX9l">
       <h1 data-page-node-id="WA43UbMcjgaNXIlKzUmA8A">成员接入（方式一 · 手机登录）</h1>
-      <p data-page-node-id="m9ZbF9Lj5BudRvpMzouKQ9">① 填手机号 → ② 点「获取验证码」收短信 → ③ 填验证码和歌曲链接 → ④ 点登记。系统自动登录并登记，<b data-page-node-id="NFUg1AQyD0YnpyqNVP7gC8">次日生效</b>。</p>
+      <p data-page-node-id="m9ZbF9Lj5BudRvpMzouKQ9">① 填群口令 → ② 填手机号 → ③ 点「获取验证码」收短信 → ④ 填验证码和歌曲链接 → ⑤ 点登记。系统自动登录并登记，<b data-page-node-id="NFUg1AQyD0YnpyqNVP7gC8">次日生效</b>。</p>
       <label data-page-node-id="4QPHrE4euxIoa2yBdvGpvA">手机号</label><input id="phone" inputmode="numeric" maxlength="11" placeholder="11 位手机号" data-page-node-id="nCLr2nnSBVbWAg972mFGEi">
       <label data-page-node-id="IbptcjD3kYGLozHrQlZzl5">短信验证码</label>
       <div class="row" data-page-node-id="Y29WAJdc1QOsL5D6PC6YQ5"><input id="code" inputmode="numeric" maxlength="6" placeholder="网易云短信验证码" data-page-node-id="oaJZKLhwjKZ1pSCk5tWTI9"><button id="send" class="mini" data-page-node-id="i7yi37ZgsXJ9El4wzOx0LT">获取验证码</button></div>
@@ -68,10 +68,13 @@
   let timer=null;
   $('send').onclick = async () => {
     const phone=$('phone').value.trim();
+    const pass=$('pass').value.trim();
     if(!/^1\d{10}$/.test(phone)){ setMsg('msg','请先填写正确的 11 位手机号','err'); return; }
+    // 2026-10-13：sendcode 接口加了群口令校验，前端先拦一道，没填口令直接提示
+    if(!pass){ setMsg('msg','请先填写群口令（群内获取）','err'); return; }
     $('send').disabled=true; setMsg('msg','正在发送验证码…');
     try{
-      const r=await fetch('/api/sendcode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
+      const r=await fetch('/api/sendcode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,pass})});
       const d=await r.json();
       if(r.ok){ setMsg('msg','验证码已发送，请查收短信','ok'); startCd(); }
       else{ setMsg('msg',d.message||'发送失败，请重试','err'); $('send').disabled=false; }
