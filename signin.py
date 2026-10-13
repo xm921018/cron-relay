@@ -163,12 +163,18 @@ class NeteaseClient:
             data = {}
         data["csrf_token"] = self._get_csrf()
         enc = weapi_encrypt(data)
-        r = self.s.post(f"{BASE_URL}{path}", data=enc, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        try:
+            r = self.s.post(f"{BASE_URL}{path}", data=enc, timeout=30)
+            return r.json()
+        except Exception as e:
+            # 网络/HTTP 异常不再炸穿整个签到循环（2026-10-13 修复：此前 raise_for_status
+            # 会让单次 5xx/超时直接抛到 main，导致该片后续所有账号当天不签到）。
+            # 统一降级为 code=-1，由调用方按账号粒度处理。
+            logger.warning(f"请求失败 {path}: {str(e)[:120]}")
+            return {"code": -1, "message": f"请求失败: {str(e)[:120]}"}
 
     def login_check(self, name):
-        """验证 cookie 是否有效：调用签到接口，-2=重复签到说明cookie有效"""
+        """验证 cookie 是否有效。返回三态：True=有效 / False=明确失效 / None=网络异常无法判定。"""
         body = self.weapi_post("/weapi/point/dailyTask", {"type": 1})
         code = body.get("code", -1)
         if code == -2:
@@ -183,6 +189,11 @@ class NeteaseClient:
         if body2.get("code") == 200:
             logger.info(f"[{name}] Cookie 有效（云贝进度查询成功）")
             return True
+        # 两次请求都 code=-1 = 请求层失败（网络/HTTP 错误），不是 cookie 本身的问题，
+        # 返回 None 让主程序跳过本次而非误判过期（2026-10-13 修复）
+        if code == -1 and body2.get("code", -1) == -1:
+            logger.warning(f"[{name}] 网络异常，无法判定 cookie 状态（明天重试）")
+            return None
         logger.error(f"[{name}] Cookie 无效或已过期: code={code}")
         return False
 
@@ -414,6 +425,8 @@ def main():
 
         success_count = 0
         fail_count = 0
+        skipped_count = 0
+        expired = []          # 明确过期的账号，聚合成一封邮件（2026-10-13 修复：此前每号一封）
         all_results = []
 
         for acc in signin_accounts:
@@ -423,8 +436,13 @@ def main():
             results = [f"\n===== {aname} ====="]
 
             client = NeteaseClient(cookie)
-            if not client.login_check(aname):
-                notify_fail(cfg, f"账号 [{aname}] 的 Cookie 已过期")
+            chk = client.login_check(aname)
+            if chk is None:
+                logger.warning(f"[{aname}] 网络异常，跳过本次签到（明天自动重试）")
+                skipped_count += 1
+                continue
+            if chk is False:
+                expired.append(aname)
                 fail_count += 1
                 continue
 
@@ -472,8 +490,12 @@ def main():
             all_results.extend(results)
             time.sleep(random.uniform(2, 5))
 
-        logger.info(f"签到完成: 成功 {success_count} 个, 失败 {fail_count} 个")
+        logger.info(f"签到完成: 成功 {success_count} 个, 失败 {fail_count} 个, 网络异常跳过 {skipped_count} 个")
         print("\n".join(all_results))
+
+        # 过期账号聚合成一封邮件（2026-10-13 修复：此前每个过期号单独发一封，全过期时邮件轰炸）
+        if expired:
+            notify_fail(cfg, f"{len(expired)} 个账号 Cookie 已过期", "、".join(expired))
 
         if fail_count > 0 and success_count == 0:
             notify_fail(cfg, f"所有账号签到失败 (共 {fail_count} 个)")
