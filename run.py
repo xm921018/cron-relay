@@ -92,25 +92,34 @@ class Client:
             return {"_raw": r.text[:200], "status_code": r.status_code}
 
     def login_by_cookie(self, cookie, name=""):
+        """三态判定：True=活号 / False=明确失效 / None=网络异常无法判定。
+        2026-10-13 修复：此前任何异常都返回 False，一次超时/连接错误就会把活号
+        误报成死号并被 Worker 从 KV+Secrets 真删，成员得重新登记。"""
         self.account_name = name
         try:
             info = self._weapi_post(f"{BASE_URL}/weapi/w/nuser/account/get", {})
-            prof = (info.get("profile") or info.get("data", {}).get("profile") or {})
-            self.uid = prof.get("userId")
-            self.nickname = prof.get("nickname")
-            if info.get("code") == 200 and self.uid:
-                return True
-            # 受限会话：profile 隐藏但会话可能仍活，用每日推荐二次验证。
-            # 注意必须用 api v1 明文接口：weapi v3 对未登录会话也返回歌单（2026-10-11 实测，
-            # 匿名/死号 v3 照样有歌 → 无区分度会把死号误判成活号）；v1 实测活号 30+ 首、死号/匿名 0 首。
-            try:
-                r1 = self.s.get(f"{BASE_URL}/api/v1/discovery/recommend/songs", timeout=20)
-                d1 = r1.json()
-                return d1.get("code") == 200 and len((d1.get("data") or {}).get("dailySongs") or []) > 0
-            except Exception:
-                return False
         except Exception:
+            return None
+        # _weapi_post 请求层失败时返回无 code 的 dict（含 _raw/status_code）→ 网络问题，不是号的问题
+        if "code" not in info:
+            return None
+        prof = (info.get("profile") or info.get("data", {}).get("profile") or {})
+        self.uid = prof.get("userId")
+        self.nickname = prof.get("nickname")
+        if info.get("code") == 200 and self.uid:
+            return True
+        # 明确未登录的业务码，直接判死，不必再试
+        if info.get("code") in (301, 302):
             return False
+        # 受限会话：profile 隐藏但会话可能仍活，用每日推荐二次验证。
+        # 注意必须用 api v1 明文接口：weapi v3 对未登录会话也返回歌单（2026-10-11 实测，
+        # 匿名/死号 v3 照样有歌 → 无区分度会把死号误判成活号）；v1 实测活号 30+ 首、死号/匿名 0 首。
+        try:
+            r1 = self.s.get(f"{BASE_URL}/api/v1/discovery/recommend/songs", timeout=20)
+            d1 = r1.json()
+        except Exception:
+            return None  # 二次验证也网络失败，无法判定
+        return d1.get("code") == 200 and len((d1.get("data") or {}).get("dailySongs") or []) > 0
 
     def song_detail(self, ids):
         out = {}
@@ -189,17 +198,23 @@ def main():
         print(f"[slice {slice_idx}] 号池为空，跳过")
         return
 
-    # 1) 校验存活
+    # 1) 校验存活（三态：True=活 / False=明确死 / None=网络异常无法判定）。
+    # None 时本次跳过该号：不播放，也绝不上报死号——一次网络抖动不该把活号清理出池（2026-10-13 修复）
     active = []
     dead = 0
+    unknown = 0
     dead_names = []
     for e in entries:
         c = Client(e.get("ck", ""))
-        if c.login_by_cookie(e.get("ck", ""), e.get("name", "?")):
+        v = c.login_by_cookie(e.get("ck", ""), e.get("name", "?"))
+        if v is True:
             active.append(e)
-        else:
+        elif v is False:
             dead += 1
             dead_names.append(e.get("name", ""))
+        else:
+            unknown += 1
+            print(f"  [{e.get('name','?')}] 网络异常无法判定，本次跳过（不报失效）")
         time.sleep(random.uniform(1, 3))
 
     # 2) 过滤当天新加入（第 2 天入池）
@@ -207,7 +222,7 @@ def main():
     # （实测延迟 4.5h），此时 UTC 日期比北京晚一天，曾导致全池被误判"当天新号"而白跑（2026-10-11 实锤）
     today = (datetime.utcnow() + timedelta(hours=8)).date().isoformat()
     active = [e for e in active if e.get("added", "") < today]
-    print(f"[slice {slice_idx}] 总数 {len(entries)} 存活 {len(active)} 失效 {dead} 今日新号剔除后 {len(active)}")
+    print(f"[slice {slice_idx}] 总数 {len(entries)} 存活 {len(active)} 失效 {dead} 网络异常 {unknown} 今日新号剔除后 {len(active)}")
 
     n = len(active)
     if n < 2:
@@ -220,21 +235,30 @@ def main():
     n_listen = sum(1 for e in active if e.get("noListen"))
     print(f"[slice {slice_idx}] 本片处理 {len(my_accounts)}/{n} 个号 (NS={ns}，其中只收不听 {n_listen} 个不参与播放)")
 
-    # 3) 预取所有歌时长
+    # 3) 预取所有歌时长（换号重试：单个号的会话受限/请求失败就换下一个，不再静默全空）
     song_ids = [e["song"] for e in active if e.get("song")]
     dur_map = {}
     if song_ids:
-        dur_map = Client(active[0]["ck"]).song_detail(song_ids)
+        for e in active:
+            try:
+                dur_map = Client(e["ck"]).song_detail(song_ids)
+            except Exception:
+                dur_map = {}
+            if dur_map:
+                break
 
     # 3.5) 预取混听歌池（云音乐热歌榜，全片共享一份；只听群外的歌）
     hot = []
     if mixed_max > 0 and active:
         group_songs = {e.get("song") for e in active}
-        try:
-            hot = [(i, d) for (i, d) in Client(active[0]["ck"]).playlist_tracks(MIX_HOT_PID)
-                   if i not in group_songs]
-        except Exception:
-            hot = []
+        for e in active:
+            try:
+                hot = [(i, d) for (i, d) in Client(e["ck"]).playlist_tracks(MIX_HOT_PID)
+                       if i not in group_songs]
+            except Exception:
+                hot = []
+            if hot:
+                break
         print(f"[slice {slice_idx}] 混听歌池（热歌榜，剔除群内歌后）{len(hot)} 首")
 
     done = 0
@@ -244,7 +268,11 @@ def main():
         random.shuffle(others)
         picks = others[:plays]
         client = Client(acc["ck"])
-        if not client.login_by_cookie(acc["ck"], acc.get("name", "?")):
+        chk = client.login_by_cookie(acc["ck"], acc.get("name", "?"))
+        if chk is None:
+            print(f"  [{acc.get('name','?')}] 播放前复验网络异常，跳过（不报失效）")
+            continue
+        if chk is False:
             print(f"  [{acc.get('name','?')}] 本次失效，跳过")
             dead_names.append(acc.get("name", ""))
             continue
