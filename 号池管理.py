@@ -438,16 +438,17 @@ def cmd_check(_):
         try:
             if run_client:
                 c = run_client(e.get("ck", ""))
-                ok = c.login_by_cookie(e.get("ck", ""), name)
+                v = c.login_by_cookie(e.get("ck", ""), name)
                 info = (c.nickname or "?") + (f" (uid={c.uid})" if c.uid else " [受限会话但可听歌]")
-                mark = "✓ 有效" if ok else "✗ 失效"
+                # 三态判定（2026-10-13 与 run.py 对齐）：None=网络异常，不算失效
+                mark = "✓ 有效" if v is True else ("✗ 失效" if v is False else "？网络异常，无法判定")
             else:
                 s = requests.Session(); s.trust_env = False
                 r = s.get(NETEASE_ACC_API, headers={"Cookie": e.get("ck", ""), "Referer": "https://music.163.com"}, timeout=20)
                 d = r.json(); prof = d.get("profile") or {}; acc = d.get("account") or {}
-                ok = d.get("code") == 200 and (prof.get("userId") or acc.get("id"))
-                info, mark = prof.get("nickname") or "?", ("✓ 有效" if ok else "✗ 失效 code=" + str(d.get("code")))
-            alive += 1 if ok else 0
+                v = d.get("code") == 200 and (prof.get("userId") or acc.get("id"))
+                info, mark = prof.get("nickname") or "?", ("✓ 有效" if v else "✗ 失效 code=" + str(d.get("code")))
+            alive += 1 if v is True else 0
             print(f"  {i+1}. {name}: {mark} {info}")
         except Exception as ex:
             print(f"  {i+1}. {name}: ？网络异常 {str(ex)[:80]}")
