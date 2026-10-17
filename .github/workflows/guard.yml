@@ -27,6 +27,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
+  contents: read
   actions: write
 
 jobs:
@@ -92,14 +93,30 @@ jobs:
           elif latest.get("conclusion") == "success":
               print("最近 relay 全部成功，无需动作")
           else:
-              # failure/cancelled 等：只补跑失败的片，已成功的片不重跑
-              # （rerun-failed-jobs 对 cancelled 的 run 同样有效，会重跑未成功的 job）
-              print("最近 relay 未完整成功，尝试 rerun-failed-jobs 只补失败片")
+              # failure/cancelled 等：先判断这个失败 run 用的是否为最新代码
+              # 2026-10-17 案例：relay#9 用旧码 fce6ac8 失败，guard rerun-failed-jobs 会
+              # 强制 checkout 原 head_sha(仍是旧码)，导致同一故障二次失败、再发一封失败邮件。
+              # 故：失败 run 的 head_sha 落后于 main HEAD → 跳过补跑，等下一班 relay 用最新码跑。
+              run_head = latest.get("head_sha")
+              main_head = None
               try:
-                  code = post(f"https://api.github.com/repos/{REPO}/actions/runs/{latest['id']}/rerun-failed-jobs")
-                  print("rerun-failed-jobs HTTP", code)
+                  main_head = get(f"https://api.github.com/repos/{REPO}/commits/main").get("sha")
               except Exception as e:
-                  # 没有可重跑的 job 或接口异常时，退回整班 dispatch
-                  print("rerun-failed-jobs 失败，退回整班 dispatch:", str(e)[:150])
-                  print("dispatch HTTP", post(f"https://api.github.com/repos/{REPO}/actions/workflows/run.yml/dispatches"))
+                  # 拿不到 main HEAD 时不擅自跳过，保守按原逻辑补跑
+                  print("获取 main HEAD 失败，保守按原逻辑补跑:", str(e)[:120])
+              if run_head and main_head and run_head != main_head:
+                  print(f"失败 run {latest['id']} 用的是旧代码 {run_head[:7]}，main 已更新到 "
+                        f"{main_head[:7]}；跳过 rerun，等下一班 relay 用最新码运行"
+                        f"（避免用旧 commit 重复失败、重复触发失败告警邮件）")
+              else:
+                  # 跑的就是最新码仍失败(或取不到 main HEAD 无法比较)：只补失败片，已成功的片不重跑
+                  # （rerun-failed-jobs 对 cancelled 的 run 同样有效，会重跑未成功的 job）
+                  print("失败 run 使用的即最新代码(或无法比较)，尝试 rerun-failed-jobs 只补失败片")
+                  try:
+                      code = post(f"https://api.github.com/repos/{REPO}/actions/runs/{latest['id']}/rerun-failed-jobs")
+                      print("rerun-failed-jobs HTTP", code)
+                  except Exception as e:
+                      # 没有可重跑的 job 或接口异常时，退回整班 dispatch
+                      print("rerun-failed-jobs 失败，退回整班 dispatch:", str(e)[:150])
+                      print("dispatch HTTP", post(f"https://api.github.com/repos/{REPO}/actions/workflows/run.yml/dispatches"))
           EOF
