@@ -361,7 +361,8 @@ def cmd_list(_):
         nick_disp = nick if nick else "?(取不到)"
         uid_disp = str(e.get("uid") or live_uid or "-")
         name_disp = str(e.get('name','')) + ("[只收]" if e.get("noListen") else "")
-        print(f"{i+1:<4} {name_disp:<26} {nick_disp:<24} {song_disp:<36} {str(song or '-'):<12} {uid_disp:<14} {str(e.get('added','')):<12} {snippet}")
+        mail_disp = f"[邮箱 {e.get('email')}]" if e.get("email") else "[无邮箱]"
+        print(f"{i+1:<4} {name_disp:<26} {nick_disp:<24} {song_disp:<36} {str(song or '-'):<12} {uid_disp:<14} {str(e.get('added','')):<12} {snippet} {mail_disp}")
 
 
 def cmd_add(a):
@@ -416,6 +417,23 @@ def cmd_setsong(a):
     save_master(master)
     tag = "公益号（不绑单曲）" if not e["song"] else f"歌曲 {e['song']}"
     print(f"已更新 {e.get('name')} → {tag}")
+    do_resync()
+
+
+def cmd_setmail(a):
+    """补录/更新号主邮箱（2026-10-17 直邮功能配套：老号无 email 时异常提醒只进日志）。"""
+    master = load_master()
+    i, e = find_entry(master, a.key)
+    mail = (a.email or "").strip()
+    if mail.lower() in ("none", "del", "-", "clear", "清除"):
+        e.pop("email", None)
+        print(f"已清除 {e.get('name')} 的邮箱（异常将不再直邮该号主）")
+    else:
+        if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", mail):
+            sys.exit(f"邮箱格式不对：{mail}")
+        e["email"] = mail
+        print(f"已更新 {e.get('name')} → 邮箱 {mail}（账号异常将直邮该号主）")
+    save_master(master)
     do_resync()
 
 
@@ -483,6 +501,10 @@ def main():
     sp.add_argument("key")
     sp.add_argument("song", help="歌曲ID 或 none")
     sp.set_defaults(fn=cmd_setsong)
+    sp = sub.add_parser("setmail")
+    sp.add_argument("key")
+    sp.add_argument("email", help="号主邮箱；填 none 清除")
+    sp.set_defaults(fn=cmd_setmail)
     sub.add_parser("check").set_defaults(fn=cmd_check)
     sub.add_parser("resync").set_defaults(fn=cmd_resync)
 
