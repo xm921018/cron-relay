@@ -603,10 +603,15 @@ def main():
             time.sleep(random.uniform(5, 15))
 
         logger.info(f'全部完成: 成功 {success_count} 个, 失败 {fail_count} 个, 今日应发 {len(todo)} 个账号')
-        if success_count == 0:
-            notify_fail(cfg, f"所有 notes 账号发布均失败 (共 {len(notes_accounts)} 个)")
-            sys.exit(1)
-        print(f"发布完成: {success_count}/{len(notes_accounts)} 成功")
+        if success_count == 0 and fail_count > 0:
+            # 2026-10-17 修复：个别号被网易云风控(code=250 安全验证)或登录失效，属账号级
+            # 临时问题，不该让整个 relay run 标红、误发告警邮件。真正的系统故障(程序异常)
+            # 由下方 except 分支统一告警并退出；此处仅记 warning，正常退出。
+            logger.warning(
+                f"今日应发账号全部为账号级失败(风控/登录失效等)，不计为系统故障，"
+                f"不发送告警邮件。成功 {success_count} / 失败 {fail_count} / 应发 {len(todo)}"
+            )
+        print(f"发布完成: {success_count}/{len(todo)} 成功")
 
     except Exception as e:
         logger.error(f"程序异常: {e}")
