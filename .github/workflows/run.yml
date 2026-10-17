@@ -63,6 +63,8 @@ jobs:
       NB_POOL_3: ${{ secrets.NB_POOL_3 }}
       NB_POOL_4: ${{ secrets.NB_POOL_4 }}
       NB_POOL_5: ${{ secrets.NB_POOL_5 }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_AUTH_CODE: ${{ secrets.EMAIL_AUTH_CODE }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

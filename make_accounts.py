@@ -52,6 +52,7 @@ def main():
         accounts.append({
             "name": e.get("name", "unknown"),
             "cookie": cookie,
+            "email": e.get("email", ""),   # 2026-10-17：号主邮箱，账号不能正常刷播放时直邮提醒本人
             "roles": "signin,notes",
             "is_musician": True,   # 互助群成员均为音乐人账号；非音乐人会被接口自动跳过
             "enabled": True,

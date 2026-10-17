@@ -426,7 +426,7 @@ def main():
         success_count = 0
         fail_count = 0
         skipped_count = 0
-        expired = []          # 明确过期的账号，聚合成一封邮件（2026-10-13 修复：此前每号一封）
+        expired = []          # 明确过期的账号 [{name,email}]，聚合一封群主通知 + 逐个直邮号主（2026-10-17 起直邮）
         all_results = []
 
         for acc in signin_accounts:

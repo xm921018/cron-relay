@@ -647,6 +647,14 @@ def main():
             else:
                 logger.error(f"[{aname}] 发布失败: {json.dumps(resp, ensure_ascii=False)[:300]}")
                 fail_count += 1
+                # 2026-10-17：需安全验证类失败（code=250）直邮号主本人，平和告知"做一次验证即可"；
+                # 未登记邮箱的号只记日志。登录失效由 signin.py 负责，这里只管发布环节，不重复发
+                if code == 250:
+                    try:
+                        import notify
+                        notify.notify_verify(acc.get("email", ""), client.nickname, aname)
+                    except Exception as _e:
+                        logger.warning(f"[{aname}] 直邮号主失败（不影响主流程）: {_e}")
 
             # 账号之间随机等待，模拟人类切换账号
             time.sleep(random.uniform(5, 15))
