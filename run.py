@@ -22,6 +22,7 @@ import random
 import base64
 import hashlib
 import string
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 
 import requests
@@ -53,6 +54,12 @@ WORKER_URL = "https://xx1031.xyz"
 MIN_PLAY_SECONDS = 35
 # 播放进度占比区间：过半即可，留少量随机（0.55~0.70）避免恒定比例成为机器特征
 PLAY_RATIO_MIN, PLAY_RATIO_MAX = 0.55, 0.70
+
+# 跨群互听（2026-10-20）：只向对端群拉「歌曲 id 列表」，双方的 KV 号池、人数、上限完全独立。
+# 鉴权复用本群已有的群口令 NB_PASS：对端 worker 的 PEER_PASS 键里存的就是本群口令（管理员写成对穿的），
+# 所以不需要新建任何 GitHub Secret。PEER_PASS 环境变量留作以后手工覆盖用。
+PEER_WORKER_URL = os.environ.get("PEER_WORKER_URL", "").strip()
+PEER_PASS = os.environ.get("PEER_PASS", "").strip() or os.environ.get("NB_PASS", "").strip()
 
 
 def _pad(s):
@@ -203,6 +210,26 @@ def load_pool():
     return entries
 
 
+def load_peer_songs():
+    """拉对端群「可以被听到的歌曲 id」（不含任何账号/cookie 信息）。
+
+    失败/未配置时返回空列表，本群照常跑 —— 跨群互听是锦上添花，绝不能因为它挂掉整个任务。
+    """
+    if not PEER_WORKER_URL or not PEER_PASS:
+        print("[peer] 未配置跨群互听（缺 PEER_WORKER_URL / PEER_PASS），本次只听本群")
+        return []
+    try:
+        r = requests.get(PEER_WORKER_URL.rstrip("/") + "/api/songs",
+                         params={"pass": PEER_PASS}, timeout=45)
+        d = r.json()
+        songs = [str(s) for s in (d.get("songs") or []) if s]
+        print(f"[peer] 对端群可听歌曲 {len(songs)} 首（HTTP {r.status_code}）")
+        return songs
+    except Exception as e:
+        print(f"[peer] 拉取对端歌单失败，本次只听本群: {e}")
+        return []
+
+
 def main():
     cfg = json.load(open("cfg.json", encoding="utf-8"))
     plays = int(cfg.get("plays_per_account", 28))
@@ -259,76 +286,99 @@ def main():
     n_listen = sum(1 for e in active if e.get("noListen"))
     print(f"[slice {slice_idx}] 本片处理 {len(my_accounts)}/{n} 个号 (NS={ns}，其中只收不听 {n_listen} 个不参与播放)")
 
-    # 3) 预取所有歌时长（换号重试：单个号的会话受限/请求失败就换下一个，不再静默全空）
-    song_ids = [e["song"] for e in active if e.get("song")]
+    # 3) 跨群互听：拉对端群的歌曲 id（只有 id、不含任何账号信息），与本群歌曲合并成一个歌池。
+    #    两个群的 KV 号池、人数、上限完全独立 —— 这里只共享「听谁的歌」，不合并「谁是谁的号」。
+    peer_songs = load_peer_songs()
+    own_songs = [str(e["song"]) for e in active if e.get("song")]
+    song_pool = sorted(set(own_songs) | {s for s in peer_songs if s})
+    print(f"[slice {slice_idx}] 歌池：本群 {len(set(own_songs))} 首 + 对端 {len(peer_songs)} 首 → 去重后 {len(song_pool)} 首")
+
+    # 3.1) 预取所有歌时长（换号重试：单个号的会话受限/请求失败就换下一个，不再静默全空）
     dur_map = {}
-    if song_ids:
+    if song_pool:
         for e in active:
             try:
-                dur_map = Client(e["ck"]).song_detail(song_ids)
+                dur_map = Client(e["ck"]).song_detail(song_pool)
             except Exception:
                 dur_map = {}
             if dur_map:
                 break
 
-    # 3.5) 预取混听歌池（云音乐热歌榜，全片共享一份；只听群外的歌）
+    # 3.5) 预取混听歌池（云音乐热歌榜，全片共享一份；只听歌池以外的歌）
     hot = []
     if mixed_max > 0 and active:
-        group_songs = {e.get("song") for e in active}
+        pool_set = set(song_pool)
         for e in active:
             try:
                 hot = [(i, d) for (i, d) in Client(e["ck"]).playlist_tracks(MIX_HOT_PID)
-                       if i not in group_songs]
+                       if i not in pool_set]
             except Exception:
                 hot = []
             if hot:
                 break
         print(f"[slice {slice_idx}] 混听歌池（热歌榜，剔除群内歌后）{len(hot)} 首")
 
-    done = 0
-    reported_secs = []   # 记录实际上报时长，日志里能一眼看出新规则（过半）是否生效
-    for idx, acc in enumerate(my_accounts):
-        i = active.index(acc)
-        others = [j for j in range(n) if j != i]
-        random.shuffle(others)
-        picks = others[:plays]
+    parallel = max(1, int(os.environ.get("ACCOUNT_PARALLEL", "3")))
+
+    def process_account(acc):
+        """单个账号的完整播放流程（供线程池并行调用，每号一个独立 Client）。"""
+        name = acc.get("name", "?")
+        mine = acc.get("song")
         client = Client(acc["ck"])
-        chk = client.login_by_cookie(acc["ck"], acc.get("name", "?"))
+        chk = client.login_by_cookie(acc["ck"], name)
         if chk is None:
-            print(f"  [{acc.get('name','?')}] 播放前复验网络异常，跳过（不报失效）")
-            continue
+            print(f"  [{name}] 播放前复验网络异常，跳过（不报失效）")
+            return name, 0, [], False
         if chk is False:
-            print(f"  [{acc.get('name','?')}] 本次失效，跳过")
-            dead_names.append(acc.get("name", ""))
-            continue
+            print(f"  [{name}] 本次失效，跳过")
+            return name, 0, [], True
 
         # 4) 组建播放任务：互听（pid=歌曲id）与混听（pid=热歌榜）合并后随机穿插执行，
-        #    让"听群内歌"和"听群外热歌"混在一起，而不是先刷完互听再补混听
-        tasks = []
-        for j in picks:
-            sid = active[j].get("song")
-            if sid:
-                tasks.append((sid, dur_map.get(sid) or 240, sid))
+        #    让"听群内歌"和"听群外热歌"混在一起，而不是先刷完互听再补混听。
+        #    候选来自整个歌池（含对端群），但一定剔除自己的歌 —— 绝不听自己。
+        cand = [s for s in song_pool if s != mine]
+        picks = random.sample(cand, plays) if len(cand) > plays else cand
+        tasks = [(sid, dur_map.get(sid) or 240, sid) for sid in picks]
         if hot:
             n_mix = random.randint(mixed_min, mixed_max)
             for sid, dur in random.sample(hot, min(len(hot), n_mix)):
                 tasks.append((sid, dur or 240, MIX_HOT_PID))
         random.shuffle(tasks)
+
+        cnt, secs = 0, []
         for sid, dur, pid in tasks:
             if random.random() < skip_prob:
                 continue  # 模拟切歌（切歌即不计有效播放，和真实用户行为一致）
-            # 播放进度取整首的 55%~70%（下限 75s）：必须越过「听过半才计有效播放」的门槛，
+            # 播放进度取整首的 55%~70%：必须越过「听过半才计有效播放」的门槛，
             # 否则 playCount 会涨、音乐人后台的有效播放一直是 0。短歌不能报超过自身时长。
             base = dur if dur and dur > 30 else 240
             t = int(base * random.uniform(PLAY_RATIO_MIN, PLAY_RATIO_MAX))
             t = min(t, base - 3)                              # 绝不报超过歌曲自身时长
             t = max(t, min(MIN_PLAY_SECONDS, base - 3))       # 保底 35s，短歌以歌长为界
-            ok = client.scrobble(sid, t, pid=pid, page="playlist")
-            done += 1 if ok else 0
-            if ok:
-                reported_secs.append(t)
-            # 等待已在 scrobble 内部完成，这里只留两首之间的自然过渡间隔
+            if client.scrobble(sid, t, pid=pid, page="playlist"):
+                cnt += 1
+                secs.append(t)
             time.sleep(random.uniform(1, 3))
+        print(f"  [{name}] 完成 {cnt} 次播放" + (f"，平均 {sum(secs)//len(secs)}s/首" if secs else ""))
+        return name, cnt, secs, False
+
+    done = 0
+    reported_secs = []   # 记录实际上报时长，日志里能一眼看出新规则（过半）是否生效
+    if my_accounts:
+        # 并行处理本片账号：单号绝大部分时间在 sleep 等播放时长，并行不占 CPU。
+        # 这是「播放时长提到过半」之后仍能在 6h job 上限内跑完的关键。
+        with ThreadPoolExecutor(max_workers=min(parallel, len(my_accounts))) as ex:
+            futs = [ex.submit(process_account, acc) for acc in my_accounts]
+            for f in as_completed(futs):
+                try:
+                    name, cnt, secs, is_dead = f.result()
+                except Exception as e:
+                    print(f"  [线程异常] {e}")
+                    continue
+                done += cnt
+                reported_secs.extend(secs)
+                if is_dead:
+                    dead_names.append(name)
 
     avg = f"，平均上报 {sum(reported_secs)//len(reported_secs)} 秒/首（过半口径）" if reported_secs else ""
     print(f"[slice {slice_idx}] 完成，本次有效上报约 {done} 次{avg}")
