@@ -20,6 +20,7 @@ import sys
 import time
 import random
 import base64
+import hashlib
 import string
 from datetime import date, datetime, timedelta
 
@@ -43,9 +44,15 @@ MOBILE_UAS = [
 # 混听来源：云音乐热歌榜（公开歌单，真实在榜歌曲，随官方榜单变化）
 MIX_HOT_PID = 3778678
 # 登记页 Worker 地址（失效账号清理上报用）
-WORKER_URL = "https://cron-relay.listenmusic888.workers.dev"
-# 有效播放门槛为单次 >=30s，保底 35s 留余量（短歌按比例算不足 35s 时也报 35s）
+WORKER_URL = "https://xx1031.xyz"
+# 有效播放门槛：单曲播放进度需超过整首的一半，后台才计一次「有效播放」。
+# 2026-10-20 修正：此前按 0.2~0.3 倍时长上报（4 分钟歌只报 48-72s），歌曲页 playCount 会涨，
+# 但音乐人后台「近30日有效播放」一直是 0 —— 这是成员反馈「播放量涨、650 进度不涨」的直接原因。
+# 绝对保底秒数：只用于极短歌（防报出过小的值），实际时长按下面的比例算，
+# 且永不报超过歌曲自身时长（报超时长是最典型的机器特征）。
 MIN_PLAY_SECONDS = 35
+# 播放进度占比区间：过半即可，留少量随机（0.55~0.70）避免恒定比例成为机器特征
+PLAY_RATIO_MIN, PLAY_RATIO_MAX = 0.55, 0.70
 
 
 def _pad(s):
@@ -72,7 +79,9 @@ class Client:
         self.nickname = None
         self.account_name = ""
         if not device_id:
-            device_id = "YD-" + "".join(random.choices(string.ascii_letters + string.digits, k=32))
+            # 设备身份必须跨次运行稳定：此前用随机串，等于每个号每天换一部新手机，
+            # 是风控最容易命中的特征（同账号+同IP+每天新设备）。改为按 cookie 派生、永久不变。
+            device_id = "YD-" + hashlib.md5(cookie.encode("utf-8")).hexdigest()[:32]
         enriched = (
             f"{cookie}; deviceId={device_id}; os=pc; appver=2.10.11.200601; "
             f"osver=Microsoft-Windows-10-Professional-build-19045-64bit; channel=netease; MUSIC_A_T=1"
@@ -149,6 +158,13 @@ class Client:
             return []
 
     def scrobble(self, tid, t, pid=None, page="playlist"):
+        """模拟一次完整播放：startplay → 等够 t 秒 → play(time=t) → playend。
+
+        2026-10-20 修正两处（解决「播放量涨、音乐人 650 进度不涨」）：
+          ① 此前 startplay 与 play 是同一秒连发的，time 字段却写 48-72 秒，时间戳自相矛盾；
+             现在按上报时长真实等待，请求时间与 time 对得上，与真实客户端一致。
+          ② 补发 playend：真实播放器播完会发结束事件，此前只发 play，行为链不完整。
+        """
         csrf = ""
         try:
             csrf = self.s.headers.get("Cookie", "").split("__csrf=")[-1].split(";")[0].strip()
@@ -157,6 +173,7 @@ class Client:
         try:
             start = [{"action": "startplay", "json": {"id": str(tid), "type": "song", "content": f"id={tid}"}}]
             self._weapi_post(f"{BASE_URL}/weapi/feedback/weblog", {"logs": json.dumps(start), "csrf_token": csrf})
+            time.sleep(t + random.uniform(1, 3))
             play = [{"action": "play", "json": {
                 "download": "0", "end": "playend", "id": str(tid),
                 "sourceId": str(pid) if pid else str(tid), "time": str(t),
@@ -164,6 +181,8 @@ class Client:
                 "resourceid": str(tid), "page": page, "is_autoplay": "0",
                 "mainsite": "1", "mainsiteWeb": "1", "content": f"id={tid}"}}]
             res = self._weapi_post(f"{BASE_URL}/weapi/feedback/weblog", {"logs": json.dumps(play), "csrf_token": csrf})
+            end = [{"action": "playend", "json": {"id": str(tid), "type": "song", "content": f"id={tid}"}}]
+            self._weapi_post(f"{BASE_URL}/weapi/feedback/weblog", {"logs": json.dumps(end), "csrf_token": csrf})
             return res.get("code") == 200
         except Exception:
             return False
@@ -267,6 +286,7 @@ def main():
         print(f"[slice {slice_idx}] 混听歌池（热歌榜，剔除群内歌后）{len(hot)} 首")
 
     done = 0
+    reported_secs = []   # 记录实际上报时长，日志里能一眼看出新规则（过半）是否生效
     for idx, acc in enumerate(my_accounts):
         i = active.index(acc)
         others = [j for j in range(n) if j != i]
@@ -296,13 +316,22 @@ def main():
         random.shuffle(tasks)
         for sid, dur, pid in tasks:
             if random.random() < skip_prob:
-                continue  # 模拟切歌
-            t = max(MIN_PLAY_SECONDS, int(dur * random.uniform(0.2, 0.3)))
+                continue  # 模拟切歌（切歌即不计有效播放，和真实用户行为一致）
+            # 播放进度取整首的 55%~70%（下限 75s）：必须越过「听过半才计有效播放」的门槛，
+            # 否则 playCount 会涨、音乐人后台的有效播放一直是 0。短歌不能报超过自身时长。
+            base = dur if dur and dur > 30 else 240
+            t = int(base * random.uniform(PLAY_RATIO_MIN, PLAY_RATIO_MAX))
+            t = min(t, base - 3)                              # 绝不报超过歌曲自身时长
+            t = max(t, min(MIN_PLAY_SECONDS, base - 3))       # 保底 35s，短歌以歌长为界
             ok = client.scrobble(sid, t, pid=pid, page="playlist")
             done += 1 if ok else 0
-            time.sleep(t + random.uniform(1, 2))
+            if ok:
+                reported_secs.append(t)
+            # 等待已在 scrobble 内部完成，这里只留两首之间的自然过渡间隔
+            time.sleep(random.uniform(1, 3))
 
-    print(f"[slice {slice_idx}] 完成，本次有效上报约 {done} 次")
+    avg = f"，平均上报 {sum(reported_secs)//len(reported_secs)} 秒/首（过半口径）" if reported_secs else ""
+    print(f"[slice {slice_idx}] 完成，本次有效上报约 {done} 次{avg}")
 
     # 5) 把失效账号上报给 Worker，从 KV 号池与 GitHub Secrets 中清理（失败不影响主任务）
     dead_names = sorted({x for x in dead_names if x})
