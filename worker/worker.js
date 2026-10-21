@@ -1187,7 +1187,7 @@ nacl.setPRNG = function(fn) {
 //   GH_OWNER   仓库 owner（如 xm921018）
 //   GH_REPO    仓库名（如 cron-relay）
 //   GROUP_PASS 管理暗号（2026-10-20 起登记接口不再校验，仅供 /api/resync、/api/report_dead 两个隐藏管理接口）
-//   POOL_LIMIT_G1 一群登记上限（默认 200）。二群已独立为 dingzhi 系统（自带 500 上限），
+//   POOL_LIMIT_G1 一群登记上限（默认 500，2026-10-21 由 200 上调）。二群已独立为 dingzhi 系统（自带 500 上限），
 //                 主 worker 不再使用 GROUP_PASS2 / POOL_LIMIT_G2（cfg 中保留仅为兼容 stats 字段）
 //   POOL       KV namespace 绑定（维护主号池，cookie 不落 GitHub 仓库文件）
 // 注意：cookie 只在 KV 与 GitHub Secrets（加密）中存在，仓库文件无明文。
@@ -1360,9 +1360,9 @@ async function cfg() {
       groupPass: cleanKV(await POOL.get('GROUP_PASS')),
       groupPass2: cleanKV(await POOL.get('GROUP_PASS2')),
       adminPass: cleanKV(await POOL.get('ADMIN_PASS')),
-      // 分群上限：一群默认 200 / 二群默认 500；旧键 POOL_LIMIT 保留但不再参与闸门
-      poolLimit: parseInt(cleanKV(await POOL.get('POOL_LIMIT')), 10) || 200,
-      poolLimitG1: parseInt(cleanKV(await POOL.get('POOL_LIMIT_G1')), 10) || 200,
+      // 分群上限：一群默认 500 / 二群默认 500；旧键 POOL_LIMIT 保留但不再参与闸门
+      poolLimit: parseInt(cleanKV(await POOL.get('POOL_LIMIT')), 10) || 500,
+      poolLimitG1: parseInt(cleanKV(await POOL.get('POOL_LIMIT_G1')), 10) || 500,
       poolLimitG2: parseInt(cleanKV(await POOL.get('POOL_LIMIT_G2')), 10) || 500,
       owner: GH_OWNER,
       repo: GH_REPO,
@@ -1804,7 +1804,7 @@ async function handle(request) {
       const c = await cfg();
       const gp1 = groupPassCheck(c, body);
       if (!gp1.ok) return json({ message: gp1.msg }, gp1.status);
-      // 号池满员闸口（一群上限 POOL_LIMIT_G1 默认 200）；
+      // 号池满员闸口（一群上限 POOL_LIMIT_G1 默认 500，2026-10-21 由 200 上调）；
       // 二群已独立为 dingzhi 系统，主 worker 一律按一群计数与登记
       const isG2 = false;
       const myLimit = groupLimitOf(c, isG2);
@@ -2099,7 +2099,7 @@ function render(){
    +'<div class="stat'+(STATS.noMail?' warn':'')+'"><b>'+STATS.noMail+'</b><span>未绑邮箱</span></div>'
    +'<div class="stat'+(STATS.noListen?' warn':'')+'"><b>'+STATS.noListen+'</b><span>只收号</span></div>'
    +'<div class="stat"><b>'+STATS.public+'</b><span>公益号</span></div>'
-   +'<div class="stat"><b>'+(STATS.limit||200)+'</b><span>人数上限</span></div>'
+   +'<div class="stat"><b>'+(STATS.limit||500)+'</b><span>人数上限</span></div>'
    +'<div class="stat'+(STATS.remain<=20?' warn':'')+'"><b>'+STATS.remain+'</b><span>剩余名额</span></div>'
    +'<div class="stat"><b>'+(list.length)+'</b><span>当前筛选</span></div>';
   var h='';
