@@ -1548,7 +1548,8 @@ async function pruneExpired() {
     await POOL.put('dead_log', JSON.stringify([...log].slice(-500)));
   } catch (e) {}
   const kept = master.filter(e => !isExpiredEntry(e));
-  try { await POOL.put('master', JSON.stringify(kept)); } catch (e) {}
+  await d1LogDead(dead, 'expired');
+  // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
   await pushPool(kept);
   return { master: kept, count: dead.length };
 }
@@ -1561,7 +1562,22 @@ async function gzipU8(u8) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function pushPool(entries) {
+// 2026-10-22：Secrets 分片降级为「只读回退备份」，默认不再随每次登记/删除重写。
+// 原因：一次 pushPool = 12 次 ghPutSecret（每次 X25519 + sealed box + 加密 + PUT），
+// 是整个 worker 最大的 CPU 消耗；而所有读者（run.py / make_accounts.py / run.yml plan）
+// 现在都先走 D1（/api/assign、/api/pool_stat），只有 D1 完全不可用时才回退 Secrets。
+// 紧急需要重推一份全量快照：KV 里把 PUSH_SECRETS 设为 '1'，或直接调 /api/resync（强制推）。
+let _pushOn = null, _pushOnAt = 0;
+async function pushPoolEnabled() {
+  if (_pushOn !== null && Date.now() - _pushOnAt < 60000) return _pushOn;
+  try { _pushOn = (cleanKV(await POOL.get('PUSH_SECRETS')) === '1'); }
+  catch (e) { _pushOn = false; }
+  _pushOnAt = Date.now();
+  return _pushOn;
+}
+
+async function pushPool(entries, force) {
+  if (!force && !(await pushPoolEnabled())) return { skipped: true, count: entries.length };
   const CHUNK_MAX = 40000;  // 原始 JSON 字符数；实测 gzip≈0.52 字节/字符（CK hex 不可压缩），b64+sealed 后 ~37KB < 48KB
   const SLOT_N = 12;        // 槽位 NB_POOL_1..12（读取端 run.py / run.yml plan 已同步扩到 12）；12×4万字符 ≈ 550 号容量 > 500 上限
   const chunks = [];
@@ -1642,7 +1658,7 @@ async function mergePoolKV() {
     .filter(e => !listed.has(entryKeyOf(e)))
     .map(e => POOL.put(entryKeyOf(e), JSON.stringify(e))));
   if (changed || merged.length !== base.length) {
-    try { await POOL.put('master', JSON.stringify(merged)); } catch (e) {}
+    // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
   }
   return merged;
 }
@@ -1728,7 +1744,7 @@ async function addEntry(entry) {
   }
   // master 缓存尽力刷新（此写有竞态也无害：下次 mergePool 自愈）
   const updated = master.concat([entry]);
-  try { await POOL.put('master', JSON.stringify(updated)); } catch (e) {}
+  // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
   await pushPool(updated);
   return { ok: true };
 }
@@ -1755,6 +1771,23 @@ async function d1All(sql, params) {
     return (r && r.results) || [];
   } catch (e) { console.error('D1 all 失败:', e && e.message); return null; }
 }
+
+// 死号流水写 D1（2026-10-22 新增）：KV 里的 dead_log 只是「墓碑名单」，最多 500 条、只存键名，
+// 看不出是谁、什么时候、因为什么被清理。D1 dead_log 表存完整流水，供周报统计与事后追查。
+async function d1LogDead(entries, reason) {
+  if (!d1ok() || !entries || !entries.length) return;
+  const at = new Date(Date.now() + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+  for (const e of entries) {
+    try {
+      await d1Run('INSERT INTO dead_log (pool,uid,name,reason,at) VALUES (?,?,?,?,?)',
+        [POOL_NAME,
+         e && e.uid != null && String(e.uid) !== '' ? String(e.uid) : null,
+         e && e.name ? String(e.name) : null,
+         reason || 'unknown', at]);
+    } catch (err) { console.error('D1 死号流水写入失败:', err && err.message); }
+  }
+}
+
 async function d1Run(sql, params) {
   if (!d1ok()) return false;
   try {
@@ -1919,7 +1952,11 @@ async function buildPlan(dayStr) {
 async function handle(request) {
     const url = new URL(request.url);
     if (url.pathname === '/' || url.pathname === '/index.html') {
-      return new Response(INDEX_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+      // 2026-10-22：页面里「号池上限 N 人」原来是硬编码 200，实际上限已改 1500 → 改成读 KV 实时渲染
+      let lim = 1500;
+      try { lim = parseInt(cleanKV(await POOL.get('POOL_LIMIT_G1')), 10) || 1500; } catch (e) {}
+      return new Response(INDEX_HTML.replace('号池上限 200 人', '号池上限 ' + lim + ' 人'),
+        { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
     }
     // ---- 群主管理后台（只读）：ADMIN_PASS 独立口令，NOT 群口令 ----
     if (url.pathname === '/admin' && request.method === 'GET') {
@@ -2153,7 +2190,7 @@ async function handle(request) {
       // 与 addEntry 同一套写入机制：独立键权威写 + master 缓存刷新 + 同步号池 Secrets
       await POOL.put(entryKeyOf(target), JSON.stringify(target));
       const updated = master.map(e => entryKeyOf(e) === entryKeyOf(target) ? target : e);
-      try { await POOL.put('master', JSON.stringify(updated)); } catch (e) {}
+      // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
       await pushPool(updated);
       return json({ message: '已保存：' + email + '。之后账号有变化，会发邮件到这个邮箱。' });
     }
@@ -2195,8 +2232,8 @@ async function handle(request) {
       const c = await cfg();
       if (body.pass !== c.groupPass) return json({ message: '群口令错误' }, 403);
       let master = await mergePool();
-      await pushPool(master);
-      return json({ message: `已从 KV 重新同步 ${master.length} 条到 GitHub Secrets（NB_POOL_1..5）。` });
+      await pushPool(master, true);   // 强制推：resync 就是「现在就要一份全量快照到 Secrets」
+      return json({ message: `已从 KV 重新同步 ${master.length} 条到 GitHub Secrets（NB_POOL_1..${12}）。` });
     }
     // 失效账号清理：Actions 跑完发现 cookie 失效的号，按 name/uid 从号池剔除并重写分片
     if (url.pathname === '/api/report_dead' && request.method === 'POST') {
@@ -2221,8 +2258,9 @@ async function handle(request) {
           await POOL.put('dead_log', JSON.stringify([...log].slice(-500)));
         } catch (e) {}
       }
+      await d1LogDead(deadEntries, 'cookie_invalid');
       const after = master.filter(e => !deadSet.has(String(e.name)) && !deadSet.has(String(e.uid)));
-      try { await POOL.put('master', JSON.stringify(after)); } catch (e) {}
+      // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
       await pushPool(after);
       return json({ message: `清理 ${before - after.length} 个失效账号，剩余 ${after.length} 个。` });
     }
@@ -2452,7 +2490,8 @@ async function applyEntryEdit(body) {
       await POOL.put('dead_log', JSON.stringify([...log].slice(-500)));
     } catch (e) {}
     const kept = master.filter(e => e !== target);
-    try { await POOL.put('master', JSON.stringify(kept)); } catch (e) {}
+    await d1LogDead([target], 'manual');
+    // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
     await pushPool(kept);
     return json({ ok: true, message: '已删除账号 ' + (target.name || target.uid) }, 200, CORS);
   }
@@ -2494,7 +2533,7 @@ async function applyEntryEdit(body) {
     if (!changes.length) return json({ message: '没有要修改的内容（各栏留空=不改）' }, 400, CORS);
     await POOL.put(entryKeyOf(target), JSON.stringify(target));
     try { await d1Upsert(target); } catch (e) { console.error('D1 修改镜像失败:', e && e.message); }
-    try { await POOL.put('master', JSON.stringify(master)); } catch (e) {}
+    // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
     await pushPool(master);
     return json({ ok: true, message: '已修改 ' + (target.name || target.uid) + '：' + changes.join('、') }, 200, CORS);
   }
