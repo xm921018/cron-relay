@@ -1555,6 +1555,7 @@ async function pruneExpired() {
   await d1LogDead(dead, 'expired');
   // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
   await pushPool(kept);
+  try { await refreshPoolSnap(); } catch (e) {}   // 号池变了 → 刷新单键应急快照
   return { master: kept, count: dead.length };
 }
 async function gzipU8(u8) {
@@ -1632,14 +1633,34 @@ async function mergePool() {
 // 纯 KV 版合并（不做 D1 优先）。
 // 用途：/api/d1_sync 必须拿「KV 的真实内容」去对齐 D1，走 mergePool 会变成 D1 对齐 D1，没有意义。
 async function mergePoolKV() {
-  // 遍历 entry: 独立键（真实来源）
+  // ① 单键快照优先（2026-10-22 第三批）：1 次 KV 读拿到全池。
+  //    原来的「list + 逐键 get」在 1200 个号时是 1201 次外部操作，超过单次 invocation 的
+  //    1000 次外部操作上限 → 兜底路径必然失败，灾备形同虚设。
+  try {
+    const snap = await POOL.get(poolSnapKey());
+    if (snap) {
+      const arr = JSON.parse(snap);
+      if (Array.isArray(arr) && arr.length) {
+        const dead = new Set(await getDeadLog());
+        return arr.filter(e => !dead.has(entryKeyOf(e)));
+      }
+    }
+  } catch (e) { console.error('号池快照读取失败，回退 entry 键:', e && e.message); }
+
+  // ② 没有快照 → 退回 entry: 独立键（真实来源），但必须限制读取条数：
+  //    1 次 dead_log + 1~2 次 list + 最多 900 次 get < 1000（单次 invocation 外部操作上限）。
+  const MAX_KEYS = 900;
   const keyNames = [];
-  let cursor;
+  let cursor, truncated = false;
   do {
     const page = await POOL.list({ prefix: 'entry:', limit: 1000, cursor });
-    for (const k of page.keys) keyNames.push(k.name);
+    for (const k of page.keys) {
+      if (keyNames.length >= MAX_KEYS) { truncated = true; break; }
+      keyNames.push(k.name);
+    }
     cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+  } while (cursor && !truncated);
+  if (truncated) console.error('KV 兜底：entry 键超过 ' + MAX_KEYS + ' 个，已截断（单次调用 1000 次外部操作上限）');
   // 2026-10-22：master 是 ~200KB 的旧合并缓存，以前每次都先读它再合并，等于每次回退都白传一次
   // 大对象 + 解析。只在「一个 entry: 键都读不到」的极端情况（首次迁移 / 键被误删）才读它兜底。
   let base = [];
@@ -1720,6 +1741,7 @@ async function addEntry(entry) {
       // 只有真要推 Secrets 时才做「全池 + 新号」合并（那是一次全表读）——
       // 默认关闭推送后，这里不该再为一份没人读的分片白跑一次查询。
       if (await pushPoolEnabled()) await pushPool(await mergePoolEntry(entry, ekey));
+      try { await refreshPoolSnap(); } catch (e) {}
       return { ok: true };
     }
   }
@@ -1756,6 +1778,9 @@ async function addEntry(entry) {
   const updated = master.concat([entry]);
   // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
   await pushPool(updated);
+  // 本分支是「D1 查重失败」才走到：如果只是查询超时（D1 仍可写），这次快照能补上新号；
+  // 真的未绑定时 refreshPoolSnap 自己会因 d1ok() 为假直接返回 false，不会抛错。
+  try { await refreshPoolSnap(); } catch (e) {}
   return { ok: true };
 }
 
@@ -1921,6 +1946,41 @@ async function d1RunsWrite(day, pool, uids, slice) {
     }
     return uids.length;
   } catch (e) { console.error('D1 实跑名单写入失败:', e && e.message); return 0; }
+}
+
+// 计数型限流（2026-10-22 第三批）：D1 原子自增，返回自增后的计数。
+// 为什么不用 KV：KV 是「读一次、加一、写回」，两个并发请求会读到同一个旧值 → 各写回 n+1，
+// 等于少算一次，频控直接被绕过；而且 KV 免费额度写只有 1000 次/天。
+// 语义：先自增再判断，超限的请求也计一次（宁可多算，不漏）。
+// 返回 null = D1 不可用／写入失败，调用方必须回退 KV，不能让频控失效。
+async function d1Hit(kind, key) {
+  if (!d1ok()) return null;
+  const k2 = kind + ':' + key;
+  const ok = await d1Run(
+    'INSERT INTO rate_limit (k,n,at) VALUES (?,1,?) ON CONFLICT(k) DO UPDATE SET n=n+1, at=excluded.at',
+    [k2, new Date().toISOString()]);
+  if (!ok) return null;
+  const rows = await d1All('SELECT n FROM rate_limit WHERE k=?', [k2]);
+  if (!rows || !rows.length) return null;
+  return Number(rows[0].n) || 0;
+}
+
+// ---- 单键号池快照（2026-10-22 第三批）----
+// 背景：mergePoolKV 原来是「list 一次 + 每个 entry 键 get 一次」。1200 个号 = 1201 次外部操作，
+// 而单个 invocation 最多只能做 1000 次外部操作（Cloudflare 硬限）→ D1 一挂，KV 兜底路径
+// 自己也必然失败，等于「灾备是假的」。
+// 做法：维护一个 pool:<池> 单键（全池 JSON），兜底时 1 次读就拿到全池。
+// 它不承担权威职责（entry: 键才是），只是为了「D1 不可用时这一轮还能跑起来」，偶尔落后无妨。
+const poolSnapKey = () => 'pool:' + POOL_NAME;
+
+async function refreshPoolSnap() {
+  if (!d1ok()) return false;
+  const rows = await d1All('SELECT ' + D1_COLS + ' FROM accounts WHERE pool=? ORDER BY uid', [POOL_NAME]);
+  if (!rows || !rows.length) return false;
+  try {
+    await POOL.put(poolSnapKey(), JSON.stringify(rows.map(d1RowToEntry)));
+    return true;
+  } catch (e) { console.error('号池快照写入失败:', e && e.message); return false; }
 }
 
 // ---- 每日轮转分配 ----
@@ -2187,6 +2247,7 @@ async function handle(request) {
       // 'name:xxx' 是「没有 uid 的老条目」的占位主键，不在 live 里但绝不能删。
       const gone = rows.filter(r => !String(r.uid).startsWith('name:') && !live.has(String(r.uid)));
       await Promise.all(gone.map(r => d1Run('DELETE FROM accounts WHERE pool=? AND uid=?', [POOL_NAME, String(r.uid)])));
+      try { await refreshPoolSnap(); } catch (e) {}   // D1 全表刚被重写 → 同步刷新应急快照
       return json({ ok: true, pool: POOL_NAME, kv: master.length, synced: ok, skipped: skip,
                     failed: fail, removed: gone.length });
     }
@@ -2220,10 +2281,18 @@ async function handle(request) {
       // 污染的是 worker 的出口 IP，会连带影响登录/校验。这里按出口 IP 每天限 10 次。
       const ip = String(request.headers.get('CF-Connecting-IP') || 'unknown').slice(0, 64);
       const rk = 'sc:' + ip + ':' + beijingDate();
-      let cnt = 0;
-      try { cnt = parseInt(await POOL.get(rk), 10) || 0; } catch (e) {}
-      if (cnt >= 10) return json({ message: '今日验证码发送次数过多，请明天再试，或改用方式二（粘贴 MUSIC_U）' }, 429);
-      try { await POOL.put(rk, String(cnt + 1), { expirationTtl: 172800 }); } catch (e) {}
+      // 2026-10-22 第三批：计数从 KV 改到 D1 rate_limit 表（原子自增）。
+      // KV 版是「读→加一→写回」，并发请求会读到同一个旧值、各写回同一个 n+1 → 10 次上限可被
+      // 并发绕过；且 KV 免费额度写只有 1000 次/天。D1 不可用时才回退 KV，绝不让频控静默失效。
+      let hits = await d1Hit('sc', ip + ':' + beijingDate());
+      if (hits === null) {
+        try {
+          const cnt = parseInt(await POOL.get(rk), 10) || 0;
+          hits = cnt + 1;
+          if (cnt < 10) await POOL.put(rk, String(hits), { expirationTtl: 172800 });
+        } catch (e) { hits = 0; }
+      }
+      if (hits > 10) return json({ message: '今日验证码发送次数过多，请明天再试，或改用方式二（粘贴 MUSIC_U）' }, 429);
       const send = await neteaseSendCode(body.phone);
       if (!send.ok) return json({ message: send.msg }, 400);
       return json({ message: 'ok' });
@@ -2318,6 +2387,7 @@ async function handle(request) {
       const updated = master.map(e => entryKeyOf(e) === entryKeyOf(target) ? target : e);
       // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
       await pushPool(updated);
+      try { await refreshPoolSnap(); } catch (e) {}
       return json({ message: '已保存：' + email + '。之后账号有变化，会发邮件到这个邮箱。' });
     }
     // ---- 二维码登录通道（实测网易是否放行 CF 机房 IP）----
@@ -2415,6 +2485,7 @@ async function handle(request) {
       const after = master.filter(e => !gone.has(entryKeyOf(e)));
       // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
       await pushPool(after);
+      try { await refreshPoolSnap(); } catch (e) {}
       const nm = arr => arr.map(e => e.name || e.uid).join('、');
       return json({ message: `本次确认清理 ${confirmed.length} 个${confirmed.length ? '（' + nm(confirmed) + '）' : ''}；`
         + `新增疑似 ${suspects.length} 个（需下一轮再次判死才删除${suspects.length ? '：' + nm(suspects) : ''}），`
@@ -2478,16 +2549,19 @@ async function handle(request) {
       let dursChanged = 0;
       if (Object.keys(incoming).length) {
         // 2026-10-22：console:durs 是单键，250 片并发 get→put 必然互相覆盖 → 主存储改 D1 durs 表
-        //（按 (pool,uid) UPSERT，无竞态）。KV 里那份保留双写，作为 D1 不可用时的回退。
+        //（按 (pool,uid) UPSERT，无竞态）。
+        // 2026-10-22 第三批：D1 写成功就不再写 KV。以前不论成败都双写，而 KV「同一个 key 每秒
+        // 只能写 1 次」，250 片又是并发上报 → 这份"备份"大部分请求直接 429 失败，白烧当日
+        // 1000 次写额度，却根本保不住数据。现在只在 D1 写失败时才落 KV。
         if (d1ok()) dursChanged = await d1DursWrite(pool, incoming);
-        try {
-          let cur = {};
-          try { cur = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
-          let kvN = 0;
-          for (const k of Object.keys(incoming)) { if (cur[k] !== incoming[k]) { cur[k] = incoming[k]; kvN++; } }
-          if (kvN) await POOL.put('console:durs', JSON.stringify(cur));
-          if (!dursChanged) dursChanged = kvN;
-        } catch (e) { /* 时长沉淀失败不影响快照 */ }
+        if (!dursChanged) {
+          try {
+            let cur = {};
+            try { cur = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
+            for (const k of Object.keys(incoming)) { if (cur[k] !== incoming[k]) { cur[k] = incoming[k]; dursChanged++; } }
+            if (dursChanged) await POOL.put('console:durs', JSON.stringify(cur));
+          } catch (e) { /* 时长沉淀失败不影响快照 */ }
+        }
       }
       // 实跑名单（2026-10-22）：run.py 把本片真正跑完播放的 uid 一起报上来，
       // 供 /api/coverage 核对「应跑 vs 实跑」。放在空快照提前返回之前，避免只有名单没有指标时丢数据。
@@ -2497,19 +2571,20 @@ async function handle(request) {
         return json({ ok: true, dursMerged: dursChanged, ran: ranWrote, note: '纯时长回填，未写快照' }, 200, CORS);
       }
       const key = 'snap:' + date + ':' + pool + ':' + slice;
-      // 2026-10-22：主存储改 D1 snapshots 表；KV 那份继续写（90 天 TTL）作为回退，
-      // 因为控制台读已经切 D1，KV 这份只在 D1 不可用时才会被读到。
+      // 2026-10-22：主存储改 D1 snapshots 表。
+      // 2026-10-22 第三批：D1 写成功就不再写 KV。以前每片每天都写一个 snap: 键，200 片就是
+      // 200 次 KV 写/天（免费额度 1000 的 20%），而控制台读早已切到 D1 —— 这份纯粹白烧额度。
+      // 现在只有 D1 写失败时才落 KV：真正需要它的时候它才存在。
       const d1okSnap = await d1SnapWrite(date, pool, clean);
-      try {
-        await POOL.put(key, JSON.stringify({ ts: new Date().toISOString(), accs: clean }), { expirationTtl: 7776000 });
-      } catch (e) {
-        if (!d1okSnap) {
-          return json({ message: '快照写入失败：' + ((e && e.message) || e) }, 500, CORS);
+      if (!d1okSnap) {
+        try {
+          await POOL.put(key, JSON.stringify({ ts: new Date().toISOString(), accs: clean }), { expirationTtl: 7776000 });
+        } catch (e) {
+          return json({ message: '快照写入失败：D1 与 KV 均不可用（' + ((e && e.message) || e) + '）' }, 500, CORS);
         }
-        // D1 已成功，KV 这份只是备份，写不进去不算失败
-        console.error('快照 KV 备份写入失败（D1 已成功）:', e && e.message);
       }
-      return json({ ok: true, key: key, count: Object.keys(clean).length, ran: ranWrote, d1: d1okSnap }, 200, CORS);
+      return json({ ok: true, key: key, count: Object.keys(clean).length, ran: ranWrote, d1: d1okSnap,
+                    kv_fallback: !d1okSnap }, 200, CORS);
     }
     // ---- 覆盖率核对（2026-10-22 新增）：应跑 vs 实跑 ----
     // 以前没有任何地方核对「这一轮到底跑了多少个号」：250 片里有几片静默失败，job 依旧是绿的。
@@ -2568,12 +2643,14 @@ async function handle(request) {
       } catch (e) { /* 对端不可达：dz 列表留空，页面会提示 */ }
       const cur = await readSnapDay(date);
       const prev = await readSnapDay(prevDate);
+      // 2026-10-22 第三批：D1 可用时不再读 KV 的 console:durs（省一次读，也不会读到旧值）。
+      // 只有 D1 不可用时才回退 KV —— 那份现在已经只在 D1 写失败时才会被更新。
       let durs = {};
-      try { durs = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
-      // D1 durs 表覆盖 KV 那份（D1 更新、且不会被并发写丢）：历史上 KV 只有回填时写过，合并才完整
-      if (d1ok()) {
-        const dr = await d1All('SELECT uid,dur FROM durs');
-        if (dr) for (const r of dr) { if (r.uid && r.dur != null) durs[String(r.uid)] = Number(r.dur) || 0; }
+      const dr = d1ok() ? await d1All('SELECT uid,dur FROM durs') : null;
+      if (dr) {
+        for (const r of dr) { if (r.uid && r.dur != null) durs[String(r.uid)] = Number(r.dur) || 0; }
+      } else {
+        try { durs = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
       }
       return json({ ok: true, date: date, prevDate: prevDate, hz: hz, dz: dz, durs: durs, snap: { cur: cur, prev: prev } }, 200, CORS);
     }
@@ -2690,6 +2767,7 @@ async function applyEntryEdit(body) {
     await d1LogDead([target], 'manual');
     // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
     await pushPool(kept);
+    try { await refreshPoolSnap(); } catch (e) {}
     return json({ ok: true, message: '已删除账号 ' + (target.name || target.uid) }, 200, CORS);
   }
   if (body.action === 'update') {
@@ -2735,6 +2813,7 @@ async function applyEntryEdit(body) {
     try { d1okEdit = await d1Upsert(target); } catch (e) { console.error('D1 修改镜像失败:', e && e.message); }
     // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
     await pushPool(master);
+    try { await refreshPoolSnap(); } catch (e) {}
     return json({ ok: true, d1: !!d1okEdit,
       message: '已修改 ' + (target.name || target.uid) + '：' + changes.join('、')
         + (d1okEdit ? '' : '（⚠️ D1 镜像写入失败：KV 已保存，请稍后调 /api/resync 补齐）') }, 200, CORS);
