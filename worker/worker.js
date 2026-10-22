@@ -1492,6 +1492,11 @@ async function ghPutSecret(name, value) {
     headers: { Authorization: `token ${g.token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'cron-relay-worker' },
     body: JSON.stringify({ encrypted_value: b64enc(sealed), key_id: pk.key_id }),
   });
+  // 2026-10-22 加固：此前返回 status 但调用方不检查，422（值超 48KB）等失败被静默吞掉，
+  // 导致最大分片连续 4 天写不进去没人发现。现在非 2xx 直接抛错让登记/resync 显式失败。
+  if (r.status !== 200 && r.status !== 201) {
+    throw new Error(`写入 Secret ${name} 失败 HTTP ${r.status}（值过大或 GH_TOKEN 无权限）`);
+  }
   return r.status;
 }
 
