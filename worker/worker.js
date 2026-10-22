@@ -2305,6 +2305,7 @@ tr:hover td{background:#fafdf5}
 a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 .up{color:#c0392b;font-weight:600}.down{color:#1e8449;font-weight:600}.flat{color:#999}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:9}
+.modal[hidden]{display:none}
 .mbox{background:#fff;border-radius:14px;padding:22px;width:420px;max-width:94vw;max-height:88vh;overflow:auto}
 .mbox h3{margin:0 0 4px;font-size:16px}.mbox label{display:block;font-size:12px;color:#555;margin:10px 0 3px}
 .mbox input,.mbox select{width:100%}
