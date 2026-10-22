@@ -1,0 +1,45 @@
+name: d1-restore
+
+# D1 号池手动恢复（危险操作，只手动触发，默认 dry-run）
+# 用法：Actions → d1-restore → Run workflow
+#   file:  备份文件名，例如 d1-2026-10-26.json.gz.enc（在仓库 backup/ 目录里）
+#   write: 输入 yes 才真正写入 D1；留空只做预演（打印将写入多少条）
+# 影响面：只 INSERT OR REPLACE accounts 表，不删除任何现有账号。
+
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: 'backup/ 下的备份文件名'
+        required: true
+      write:
+        description: '输入 yes 才真正写入（留空=预演）'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 恢复
+        env:
+          CF_TOKEN: ${{ secrets.CF_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          BACKUP_PASS: ${{ secrets.BACKUP_PASS }}
+          FILE: ${{ inputs.file }}
+          WRITE: ${{ inputs.write }}
+        run: |
+          set -e
+          test -f "backup/$FILE" || { echo "找不到 backup/$FILE"; ls backup/ || true; exit 1; }
+          python3 d1_restore.py "backup/$FILE"
+          if [ "$WRITE" = "yes" ]; then
+            echo "==== 开始写入 D1 ===="
+            python3 d1_restore.py "backup/$FILE" --write
+          else
+            echo "预演结束（未写入）。确认后把 write 填 yes 再跑一次。"
+          fi
