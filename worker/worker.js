@@ -1360,10 +1360,10 @@ async function cfg() {
       groupPass: cleanKV(await POOL.get('GROUP_PASS')),
       groupPass2: cleanKV(await POOL.get('GROUP_PASS2')),
       adminPass: cleanKV(await POOL.get('ADMIN_PASS')),
-      // 分群上限：一群默认 500 / 二群默认 500；旧键 POOL_LIMIT 保留但不再参与闸门
-      poolLimit: parseInt(cleanKV(await POOL.get('POOL_LIMIT')), 10) || 500,
-      poolLimitG1: parseInt(cleanKV(await POOL.get('POOL_LIMIT_G1')), 10) || 500,
-      poolLimitG2: parseInt(cleanKV(await POOL.get('POOL_LIMIT_G2')), 10) || 500,
+      // 分群上限：2026-10-22 默认 500 → 1500（KV 里 POOL_LIMIT_G1 仍可覆盖，改数字即时生效不用改代码）
+      poolLimit: parseInt(cleanKV(await POOL.get('POOL_LIMIT')), 10) || 1500,
+      poolLimitG1: parseInt(cleanKV(await POOL.get('POOL_LIMIT_G1')), 10) || 1500,
+      poolLimitG2: parseInt(cleanKV(await POOL.get('POOL_LIMIT_G2')), 10) || 1500,
       owner: GH_OWNER,
       repo: GH_REPO,
     };
@@ -2011,12 +2011,13 @@ async function handle(request) {
       const meta = {};
       if (uids.length) {
         const ph = uids.map(() => '?').join(',');
-        const rs = await d1All('SELECT uid,name,ck FROM accounts WHERE pool=? AND uid IN (' + ph + ')',
+        const rs = await d1All('SELECT uid,name,ck,email FROM accounts WHERE pool=? AND uid IN (' + ph + ')',
                                [POOL_NAME].concat(uids));
         for (const r of (rs || [])) meta[String(r.uid)] = r;
       }
       const accounts = mine.filter(x => meta[x.uid] && meta[x.uid].ck)
-        .map(x => ({ uid: x.uid, name: meta[x.uid].name || '', ck: meta[x.uid].ck, plays: x.plays }));
+        .map(x => ({ uid: x.uid, name: meta[x.uid].name || '', ck: meta[x.uid].ck,
+                        email: meta[x.uid].email || '', plays: x.plays }));
       return json({ ok: true, pool: POOL_NAME, day: plan.day, m: plan.m, l: plan.l, p: plan.p,
                     m_pool: ownPool.length, jobs: jobs, job: job, accounts: accounts, ms: Date.now() - t0 });
     }
@@ -2077,7 +2078,7 @@ async function handle(request) {
       const c = await cfg();
       const gp1 = groupPassCheck(c, body);
       if (!gp1.ok) return json({ message: gp1.msg }, gp1.status);
-      // 号池满员闸口（一群上限 POOL_LIMIT_G1 默认 500，2026-10-21 由 200 上调）；
+      // 号池满员闸口（一群上限 POOL_LIMIT_G1 默认 1500，2026-10-22 由 500 上调）；
       // 二群已独立为 dingzhi 系统，主 worker 一律按一群计数与登记
       const isG2 = false;
       const myLimit = groupLimitOf(c, isG2);
@@ -2643,7 +2644,7 @@ function render(){
    +'<div class="stat'+(STATS.noMail?' warn':'')+'"><b>'+STATS.noMail+'</b><span>未绑邮箱</span></div>'
    +'<div class="stat'+(STATS.noListen?' warn':'')+'"><b>'+STATS.noListen+'</b><span>只收号</span></div>'
    +'<div class="stat"><b>'+STATS.public+'</b><span>公益号</span></div>'
-   +'<div class="stat"><b>'+(STATS.limit||500)+'</b><span>人数上限</span></div>'
+   +'<div class="stat"><b>'+(STATS.limit||1500)+'</b><span>人数上限</span></div>'
    +'<div class="stat'+(STATS.remain<=20?' warn':'')+'"><b>'+STATS.remain+'</b><span>剩余名额</span></div>'
    +'<div class="stat"><b>'+(list.length)+'</b><span>当前筛选</span></div>';
   var h='';
