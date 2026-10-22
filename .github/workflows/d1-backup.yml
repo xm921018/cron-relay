@@ -1,0 +1,60 @@
+name: d1-backup
+
+# D1 号池每周自动备份（2026-10-22 新增）
+# 为什么需要：2026-10-22 起号池的权威数据只在 D1（KV 是双写备份，Secrets 分片已降级为只读回退）。
+# 备份内容：accounts（含 CK，恢复必需）+ 近 60 天 snapshots + kv_misc + dead_log 流水。
+# 落盘形式：openssl aes-256-cbc 加密后提交到 backup/（仓库是 public，绝不放明文），
+#           只保留最近 8 份；同时传一份 artifact 存 90 天。
+# 恢复方式：workflow d1-restore.yml（手动触发，输入文件名），或本地 python cron-relay/d1_restore.py。
+
+on:
+  schedule:
+    - cron: '40 19 * * 0'      # UTC 周日 19:40 ≈ 北京周一 03:40
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: d1-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 导出并加密
+        env:
+          CF_TOKEN: ${{ secrets.CF_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          BACKUP_PASS: ${{ secrets.BACKUP_PASS }}
+        run: python3 d1_backup.py
+
+      - name: 只保留最近 8 份
+        run: |
+          mkdir -p backup
+          ls -1t backup/*.enc 2>/dev/null | tail -n +9 | xargs -r rm -f
+          ls -lh backup/ | tail -10
+
+      - name: 提交进仓库
+        run: |
+          git config user.name "d1-backup-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A backup/
+          if git diff --cached --quiet; then
+            echo "没有新备份，跳过提交"
+          else
+            git commit -m "backup: D1 号池快照 $(date -u +%F)"
+            git push
+          fi
+
+      - name: 上传 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-backup-${{ github.run_id }}
+          path: backup/*.enc
+          retention-days: 90
+          if-no-files-found: warn
