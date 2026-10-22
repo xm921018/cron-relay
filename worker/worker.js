@@ -1882,7 +1882,7 @@ function d1RowToEntry(r) {
 // 返回 null = D1 不可用/查询失败/表为空（调用方回退 KV）；返回数组 = 正常
 async function d1Pool() {
   if (!d1ok()) return null;
-  const rows = await d1All('SELECT ' + D1_COLS + ' FROM accounts WHERE pool=? ORDER BY uid', [POOL_NAME]);
+  const rows = await d1All('SELECT ' + D1_COLS + ' FROM accounts WHERE pool=? ORDER BY added, uid', [POOL_NAME]);
   if (!rows) return null;
   if (!rows.length) {
     // 空表几乎不可能（号池最少几十个号），当作异常处理，避免把「库被清空」误当成「号池为空」
@@ -1975,7 +1975,7 @@ const poolSnapKey = () => 'pool:' + POOL_NAME;
 
 async function refreshPoolSnap() {
   if (!d1ok()) return false;
-  const rows = await d1All('SELECT ' + D1_COLS + ' FROM accounts WHERE pool=? ORDER BY uid', [POOL_NAME]);
+  const rows = await d1All('SELECT ' + D1_COLS + ' FROM accounts WHERE pool=? ORDER BY added, uid', [POOL_NAME]);
   if (!rows || !rows.length) return false;
   try {
     await POOL.put(poolSnapKey(), JSON.stringify(rows.map(d1RowToEntry)));
