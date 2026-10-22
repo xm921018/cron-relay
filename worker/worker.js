@@ -1936,7 +1936,30 @@ async function handle(request) {
           rpc30: a.rpc30 == null ? null : Number(a.rpc30) || 0,
           cnt: a.cnt == null ? null : Number(a.cnt) || 0,
           mis: (a.mis && typeof a.mis === 'object') ? a.mis : {},
+          dur: a.dur == null ? null : Number(a.dur) || 0,
         };
+      }
+      // 时长沉淀：uid→登记歌曲时长(秒)。跟号走不跟日期走，存 console:durs（永不过期，随改随覆盖）。
+      // body.durs 供一次性回填用；纯回填（accs 空）时不写当日快照，防止空分片覆盖。
+      const incoming = {};
+      for (const k of Object.keys(clean)) { if (clean[k].dur) incoming[k] = clean[k].dur; }
+      if (body.durs && typeof body.durs === 'object') {
+        for (const k of Object.keys(body.durs).slice(0, 500)) {
+          const v = Number(body.durs[k]);
+          if (v > 0) incoming[String(k).slice(0, 16)] = Math.round(v);
+        }
+      }
+      let dursChanged = 0;
+      if (Object.keys(incoming).length) {
+        try {
+          let cur = {};
+          try { cur = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
+          for (const k of Object.keys(incoming)) { if (cur[k] !== incoming[k]) { cur[k] = incoming[k]; dursChanged++; } }
+          if (dursChanged) await POOL.put('console:durs', JSON.stringify(cur));
+        } catch (e) { /* 时长沉淀失败不影响快照 */ }
+      }
+      if (!Object.keys(clean).length) {
+        return json({ ok: true, dursMerged: dursChanged, note: '纯时长回填，未写快照' }, 200, CORS);
       }
       const key = 'snap:' + date + ':' + pool + ':' + slice;
       try {
@@ -1976,7 +1999,9 @@ async function handle(request) {
       } catch (e) { /* 对端不可达：dz 列表留空，页面会提示 */ }
       const cur = await readSnapDay(date);
       const prev = await readSnapDay(prevDate);
-      return json({ ok: true, date: date, prevDate: prevDate, hz: hz, dz: dz, snap: { cur: cur, prev: prev } }, 200, CORS);
+      let durs = {};
+      try { durs = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
+      return json({ ok: true, date: date, prevDate: prevDate, hz: hz, dz: dz, durs: durs, snap: { cur: cur, prev: prev } }, 200, CORS);
     }
     // 控制台编辑：hz 本地执行（与管理后台同一套逻辑）；dz 转发到对端 worker 的对等接口
     if (url.pathname === '/api/console/entry' && request.method === 'POST') {
@@ -2334,9 +2359,9 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <button class="mini gray" id="btnOut">退出</button>
   </div>
   <div class="twrap"><table><thead><tr>
-    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>昨rate</th><th>今rate</th><th>日环比</th><th>rpc30</th><th>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
+    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th>昨rate</th><th>今rate</th><th>日环比</th><th>rpc30</th><th>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
-  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：rate=音乐人后台 650 任务进度（近30日滚动累计，会回吐）；rpc30=近30日有效播放次数；任务列=工作台子任务进度。日环比=今日快照-昨日快照。</p>
+  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：rate=音乐人后台 650 任务进度（近30日滚动累计，会回吐）；rpc30=近30日有效播放次数；任务列=工作台子任务进度；日环比=今日快照-昨日快照；时长=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，历史上这两类曾被时长Bug卡过有效播放，10-22 已修复）。</p>
 </div>
 <div class="modal" id="modal" hidden><div class="mbox">
   <h3 id="mTitle">编辑账号</h3><p style="font-size:12px;color:#888;margin:4px 0 0" id="mSub"></p>
@@ -2430,17 +2455,23 @@ function render(){
     var mis=a&&a.mis?Object.keys(a.mis).map(function(k){return k+' '+a.mis[k]+'%';}).join(' / '):'';
     var misCell=mis?'<span class="mission" title="'+esc(mis)+'">'+esc(mis)+'</span>':'<span class="flat">—</span>';
     var song=e.song?'<a class="song" target="_blank" href="https://music.163.com/song?id='+e.song+'">'+e.song+'</a>':'<span style="color:#bbb">公益</span>';
+    var dur=(DATA.durs||{})[e.uid]||((a&&a.dur)||0);
+    var durCell='<span class="flat">—</span>';
+    if(dur>0){var mm=Math.floor(dur/60),ss=('0'+(dur%60)).slice(-2);
+      durCell=dur<132?'<span class="badge b-red" title="短歌：历史上曾被时长Bug卡过有效播放，修复(10-22)后应正常">'+mm+':'+ss+'</span>'
+        :(dur>336?'<span class="badge b-yellow" title="长歌：播放耗时长，拖慢单班进度">'+mm+':'+ss+'</span>'
+        :'<span class="num">'+mm+':'+ss+'</span>');}
     var marks=(e.noListen?'<span class="badge b-red">只收</span>':'')+(!e.email?'<span class="badge b-yellow">无邮箱</span>':'')+(!a?'<span class="badge b-gray">无数据</span>':'');
     h+='<tr><td class="num">'+(i+1)+'</td>'
       +'<td><span class="badge '+(r.pool==='hz'?'b-hz">主群':'b-dz">定制')+'</span></td>'
-      +'<td>'+esc(e.name)+'</td><td class="num">'+esc(e.uid)+'</td><td class="num">'+song+'</td>'
+      +'<td>'+esc(e.name)+'</td><td class="num">'+esc(e.uid)+'</td><td class="num">'+song+'</td><td>'+durCell+'</td>'
       +'<td class="num">'+ratePrev+'</td><td class="num" style="font-weight:600">'+rateNow+'</td><td>'+dCell+'</td>'
       +'<td class="num">'+(a&&a.rpc30!=null?a.rpc30:'—')+'</td><td>'+misCell+'</td>'
       +'<td class="num">'+esc(e.added)+'</td><td class="num">'+esc(e.exp||'永久')+'</td>'
       +'<td>'+(marks||'<span style="color:#bbb">正常</span>')+'</td>'
       +'<td><button class="mini" style="padding:4px 10px;font-size:12px" onclick="openEdit(\\''+r.pool+'\\','+JSON.stringify(JSON.stringify(e))+')">编辑</button></td></tr>';
   });
-  $('tb').innerHTML=h||'<tr><td colspan="14" style="text-align:center;color:#999;padding:20px">没有匹配的账号</td></tr>';
+  $('tb').innerHTML=h||'<tr><td colspan="15" style="text-align:center;color:#999;padding:20px">没有匹配的账号</td></tr>';
 }
 window.openEdit=function(pool,eJson){
   var e=JSON.parse(eJson);
@@ -2467,10 +2498,11 @@ function doEdit(pool,e,action){
 }
 $('eCancel').onclick=function(){$('modal').hidden=true;};
 $('btnCsv').onclick=function(){
-  var rows=[['池','账号','UID','歌曲ID','昨rate','今rate','日环比','rpc30','入池','有效期','邮箱','标记']];
+  var rows=[['池','账号','UID','歌曲ID','时长(秒)','昨rate','今rate','日环比','rpc30','入池','有效期','邮箱','标记']];
   buildRows().forEach(function(r){
     var e=r.e;
-    rows.push([r.pool==='hz'?'主群':'定制群',e.name,e.uid||'',e.song||'',
+    var dur=(DATA.durs||{})[e.uid]||((r.a&&r.a.dur)||'');
+    rows.push([r.pool==='hz'?'主群':'定制群',e.name,e.uid||'',e.song||'',dur,
       r.p&&r.p.rate!=null?r.p.rate:'',r.a&&r.a.rate!=null?r.a.rate:'',r.delta==null?'':r.delta,
       r.a&&r.a.rpc30!=null?r.a.rpc30:'',e.added||'',e.exp||'永久',e.email||'',e.noListen?'只收':'']);
   });
