@@ -40,23 +40,29 @@ jobs:
           MIN_SLICES: '4'
           MAX_SLICES: '250'  # 2026-10-22：160 → 250。数字由两个硬上限夹出来：
                              # ① GitHub 单个 matrix 最多 256 个 job → 片数必须 ≤ 250（再加 plan 共 251 个）；
-                             # ② 不限时长（可跑一整天）：250 片 × 6 号 = 1500，正好等于登记上限，每片固定 6 个号。
-                             #    若片数 < 250，1500 号时会有片分到 7 个号 → 该片要跑两轮线程（≈3.2h），一天跑不完。
-                             # 时间账：1500 号 = 250 片 × 1.63h ÷ 20 并发 ≈ 20.4 小时，一天内跑完。
-                             # 只有 20 并发是硬限制（GitHub 账号级），多出来的片排队跑，不报错也不漏号。
+                             # ② 1500 号 = 250 片 × 6 号，每片固定 6 个号；若片数 < 250，号池满时会有片
+                             #    分到 7 个号 → 该片要跑两轮线程（≈3.2h），一天跑不完。
+                             # ⚠️ 2026-10-22 晚修正：登记上限从 1500 下调到 1200（见 POOL_LIMIT_G1）。
+                             #    原因不是 CPU，是排队：GitHub 官方「job 排队 > 24h 自动取消」。
+                             #    1500 号 = 250 片 = 12.5 波 × 单片 2.0~2.1h → 尾部片排队 23~24h，
+                             #    一旦某首歌唱得久一点就整片静默消失。1200 号 = 200 片 = 10 波，
+                             #    总时长 20~21h、尾部排队 18~19h，留 4~6h 余量。
+                             # 以后真要上 1500，得先把 ACCOUNTS_PER_SLICE 调到 8（188 片 9.4 波）。
           ACCOUNTS_PER_SLICE: '6'   # 2026-10-20：改为「每个号独立线程并行」后，单号 85-95 分钟不再叠加。
-                                    # 6 个/片 ≈ 1.6h（并行），片数按号池自动算（213 号 ≈ 36 片，2~3 小时跑完；1500 号 = 250 片，约 20.4 小时）。
-                                    # 调小这个值 = 每片号更少、在线号更少、更保守；调大 = 更快。
+                                    # 6 个/片 ≈ 1.8~2.1h（并行，含 6~10 首混听）。
           # 2026-10-22：片数优先按 D1 里的真实号池人数算（问不到 worker 才回退数 Secrets），
           # 这样 Secrets 分片过期/写失败都不会再导致排片数不对。
           WORKER_URL: 'https://xx1031.xyz'
           NB_PASS: ${{ secrets.NB_PASS }}
+          # 2026-10-22：/api/assign 与 /api/pool_stat 只认独立口令 ASSIGN_PASS（回明文 CK 的接口，
+          # 不能再拿发给全体成员的群口令鉴权）。未配置时接口直接 503。
+          ASSIGN_PASS: ${{ secrets.ASSIGN_PASS }}
         run: |
           python3 - <<'EOF'
           import base64, gzip, json, os, math, urllib.parse, urllib.request
           n = 0
           url = (os.environ.get("WORKER_URL") or "").rstrip("/")
-          pw = os.environ.get("NB_PASS") or ""
+          pw = os.environ.get("ASSIGN_PASS") or os.environ.get("NB_PASS") or ""
           day0 = (__import__("datetime").datetime.utcnow() + __import__("datetime").timedelta(hours=8)).date().isoformat()
           if url and pw:
               try:
@@ -107,6 +113,8 @@ jobs:
       NS: ${{ needs.plan.outputs.ns }}
       SLICE: ${{ matrix.slice }}
       NB_PASS: ${{ secrets.NB_PASS }}
+      # 2026-10-22：/api/assign 只认，独立口令（回明文 CK 的接口不能用群口令）
+      ASSIGN_PASS: ${{ secrets.ASSIGN_PASS }}
       # 2026-10-22：账号与「今天听哪几首」改为由 worker 从 D1 统一分配（每日轮转，零遗漏）。
       # 置 0 即整体回退到旧的 Secrets 分片逻辑，无需改代码。
       ASSIGN_ON: '1'
@@ -146,16 +154,38 @@ jobs:
         run: sleep $((RANDOM % 240 + 60))   # 错开各片启动，避免同刻批量特征
       - name: run slice
         run: python run.py
+      # 2026-10-22：签到/笔记/取号三步一律 continue-on-error。
+      # 原因：guard.yml 的 rerun-failed-jobs 重跑的是「整个 job」，而 job 内是
+      # run.py → make_accounts → signin → notes 串行。签到被风控拦一次（很常见）就会
+      # 把这 6 个号的播放整片重跑一遍，当天播放翻倍，还沿用昨天的 ASSIGN_DAY 窗口。
+      # 播放本身的失败由 run.py 自己的退出码负责（见 run.py 第 7 步）。
       - name: build accounts for signin/notes
+        id: mkacc
+        continue-on-error: true
         run: python make_accounts.py
       - name: daily signin
+        id: signin
+        continue-on-error: true
         run: |
           N=$(python -c "import json;print(len(json.load(open('accounts.json'))['accounts']))")
           if [ "$N" -gt 0 ]; then python signin.py; else echo "本片无账号，跳过签到"; fi
       - name: notes publish (per-account every 6 days)
+        id: notes
+        continue-on-error: true
         run: |
           N=$(python -c "import json;print(len(json.load(open('accounts.json'))['accounts']))")
           if [ "$N" -gt 0 ]; then python notes.py; else echo "本片无账号，跳过笔记"; fi
+      - name: mark signin/notes failures (不重跑本片)
+        if: always()
+        env:
+          MKACC_OUTCOME: ${{ steps.mkacc.outcome }}
+          SIGNIN_OUTCOME: ${{ steps.signin.outcome }}
+          NOTES_OUTCOME: ${{ steps.notes.outcome }}
+        run: |
+          echo "取号=$MKACC_OUTCOME 签到=$SIGNIN_OUTCOME 笔记=$NOTES_OUTCOME"
+          if [ "$MKACC_OUTCOME" != "success" ] || [ "$SIGNIN_OUTCOME" != "success" ] || [ "$NOTES_OUTCOME" != "success" ]; then
+            echo "::error::本片签到/笔记/取号未全部成功（播放已完成，故意不让 job 失败，避免 guard 整片重播）"
+          fi
       - name: upload diag
         if: always()
         uses: actions/upload-artifact@v4
