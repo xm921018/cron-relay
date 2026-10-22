@@ -2535,7 +2535,27 @@ $('btnCsv').onclick=function(){
 (function(){
   $('date').value=todayBJ();
   var t=load();
-  if(t){TOKEN=t;$('loginBox').hidden=true;$('mainBox').hidden=false;loadData();}
+  if(t){TOKEN=t;$('loginBox').hidden=true;$('mainBox').hidden=false;loadData();return;}
+  // 2026-10-22：#pw= 免密进入（CK助手/书签用）。hash 不发给服务器，登录成功/失败后都立即 replaceState 抹掉，
+  // 地址栏与历史记录不留明文；直接访问 /console 不带 hash 时仍走正常账号密码登录。
+  var m=(location.hash||'').match(/pw=([^&]+)/);
+  if(m){
+    var pw=m[1];try{pw=decodeURIComponent(pw);}catch(e){}
+    var u='xx1031';
+    $('lm').textContent='正在自动登录…';$('lm').className='msg';
+    api('/api/console/login',{user:u,pass:pw}).then(function(o){
+      history.replaceState(null,'',location.pathname+location.search);
+      if(o.ok&&o.d.ok){
+        TOKEN=JSON.stringify({user:u,pass:pw});save(TOKEN);
+        $('loginBox').hidden=true;$('mainBox').hidden=false;loadData();
+      }else{
+        $('lm').textContent=(o.d&&o.d.message)||'免密登录失败，请手动输入账号密码';$('lm').className='msg err';
+      }
+    }).catch(function(){
+      history.replaceState(null,'',location.pathname+location.search);
+      $('lm').textContent='网络错误，请手动登录';$('lm').className='msg err';
+    });
+  }
 })();
 </script></body></html>`;
 
