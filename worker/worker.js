@@ -1534,7 +1534,11 @@ async function pruneExpired() {
   const master = await mergePool();
   const dead = master.filter(isExpiredEntry);
   if (!dead.length) return { master: master, count: 0 };
-  await Promise.all(dead.map(e => POOL.delete(entryKeyOf(e))));
+  // 读走 D1 后必须两边一起删：只删 KV 的话，下一次 mergePool 会从 D1 把过期号读回来。
+  await Promise.all(dead.map(async e => {
+    await POOL.delete(entryKeyOf(e));
+    if (!(await d1Delete(e))) console.error('D1 过期删除失败:', e && (e.name || e.uid));
+  }));
   try {
     const log = new Set(await getDeadLog());
     for (const e of dead) log.add(entryKeyOf(e));
@@ -1595,6 +1599,12 @@ async function getDeadLog() {
 }
 
 async function mergePool() {
+  // 读走 D1：一条 SELECT 取代原来的「1 次 list + N 次 POOL.get」。
+  // 号池 213 个号时，这一步从 214 次 KV 读 / 214KB 传输降到 1 次 D1 查询。
+  const d1 = await d1Pool();
+  if (d1) return d1;
+
+  // ---- 以下为 KV 回退路径：D1 未绑定 / 查询失败 / 表为空时才会走到 ----
   let base = [];
   try { base = JSON.parse(await POOL.get('master') || '[]') || []; } catch (e) {}
   const deadLog = new Set(await getDeadLog());
@@ -1630,15 +1640,61 @@ async function mergePool() {
   return merged;
 }
 
+// 读全池，并保证包含「刚写入的那一条」。
+// 用途：登记成功后要推 Secrets 分片，如果 D1 镜像写失败或读延迟，这个新号就会从分片里消失，
+// 第二天签到/发动态就漏号。这里按主键再兜一次，成本只是一次字符串比较。
+async function mergePoolEntry(entry, ekey) {
+  const list = await mergePool();
+  const k = ekey || entryKeyOf(entry);
+  if (!list.some(e => entryKeyOf(e) === k)) list.push(entry);
+  return list;
+}
+
 async function addEntry(entry) {
   // 有效期默认 2 年（730 天），管理端可随时修改（exp=YYYY-MM-DD，forever=永久）
   if (!entry.exp) entry.exp = beijingDatePlus(730);
-  // 查重：先查该账号自己的独立键（单键读，无竞态），再查合并后的主表
   const ekey = entryKeyOf(entry);
+  const uidKey = entry.uid != null ? String(entry.uid) : null;
+
+  // ---- D1 快速路径：一次 SELECT 完成查重（原路径要把 213 个 entry 键全读一遍）----
+  if (d1ok()) {
+    // uid 为空的（用 name 占位的老号）只能按 name 查。不带 uid 时不要拼那个 ? 占位符，
+    // 否则得传哨兵值，而 D1 绑定含 NUL 的字符串会报错 → 白走一次 KV 回退。
+    const dup = uidKey
+      ? await d1All('SELECT uid FROM accounts WHERE pool=? AND (uid=? OR name=?) LIMIT 1',
+                    [POOL_NAME, uidKey, String(entry.name || '')])
+      : await d1All('SELECT uid FROM accounts WHERE pool=? AND name=? LIMIT 1',
+                    [POOL_NAME, String(entry.name || '')]);
+    if (dup === null) {
+      console.error('D1 查重失败，回退 KV 全量查重');
+    } else {
+      if (dup.length) {
+        return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
+      }
+      // KV 仍写一份：D1 万一回滚，KV 里必须是完整数据
+      await POOL.put(ekey, JSON.stringify(entry));
+      if (!(await d1Upsert(entry))) {
+        console.error('D1 登记镜像失败（KV 已写入，可用 /api/resync 补齐）');
+      }
+      // 重新登记 → 清墓碑（只影响 KV 回退路径）
+      try {
+        const deadLog = new Set(await getDeadLog());
+        if (deadLog.size) {
+          const cleared = [...deadLog].filter(k => k !== ekey
+            && !(uidKey && k === 'entry:u' + uidKey)
+            && !(entry.name && k === 'entry:n' + encodeURIComponent(String(entry.name))));
+          if (cleared.length !== deadLog.size) await POOL.put('dead_log', JSON.stringify(cleared));
+        }
+      } catch (e) {}
+      await pushPool(await mergePoolEntry(entry, ekey));
+      return { ok: true };
+    }
+  }
+
+  // ---- KV 回退路径（D1 未绑定或查询失败）----
   if (await POOL.get(ekey)) {
     return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
   }
-  const uidKey = entry.uid != null ? String(entry.uid) : null;
   const deadLog = new Set(await getDeadLog());
   const master = await mergePool();
   for (const e of master) {
@@ -1720,6 +1776,64 @@ async function d1Delete(e) {
   if (uid) return d1Run('DELETE FROM accounts WHERE pool=? AND uid=?', [POOL_NAME, uid]);
   if (e.name) return d1Run('DELETE FROM accounts WHERE pool=? AND name=?', [POOL_NAME, String(e.name)]);
   return false;
+}
+
+// ====================================================================
+// D1 读路径（2026-10-22 第二批：读也切到 D1）
+// 背景：KV 的 mergePool 要 list 一次 + 把每个 entry 键读一遍（213 次读），
+// 这是「日读 3.6 万」和「p50 CPU 9ms」的主要来源。D1 一条 SELECT 就够。
+// 设计原则：D1 只做读，写仍然「KV 权威 + D1 镜像」不变；D1 任何异常都回退 KV，
+// 所以即使 D1 挂了，登记/控制台/分配也不会停，只是慢回旧路。
+// ====================================================================
+const D1_COLS = 'uid,name,song,ck,added,exp,no_listen,email';
+
+// D1 行 → KV entry 结构（保持字段名完全一致，上层代码无需改动）
+function d1RowToEntry(r) {
+  const uidRaw = String(r.uid || '');
+  // 无 uid 的历史条目在库里用 'name:xxx' 占位（导入时补的），这里还原成「无 uid」
+  const e = {
+    name: String(r.name || ''),
+    song: String(r.song || ''),
+    ck: String(r.ck || ''),
+    added: String(r.added || ''),
+    exp: String(r.exp || ''),
+    email: String(r.email || ''),
+  };
+  if (uidRaw && !uidRaw.startsWith('name:')) e.uid = r.uid;
+  if (r.no_listen) e.noListen = 1;
+  return e;
+}
+
+// 返回 null = D1 不可用/查询失败/表为空（调用方回退 KV）；返回数组 = 正常
+async function d1Pool() {
+  if (!d1ok()) return null;
+  const rows = await d1All('SELECT ' + D1_COLS + ' FROM accounts WHERE pool=? ORDER BY uid', [POOL_NAME]);
+  if (!rows) return null;
+  if (!rows.length) {
+    // 空表几乎不可能（号池最少几十个号），当作异常处理，避免把「库被清空」误当成「号池为空」
+    console.error('D1 号池为空，回退 KV 读取');
+    return null;
+  }
+  return rows.map(d1RowToEntry);
+}
+
+// 快照写入：一次 batch 写完整片（原来是 POOL.put 一个 snap: 键）。
+// 好处：控制台回看可以直接 SELECT，不用先 list 再逐个 get；也不再占用 KV 的 list 配额。
+async function d1SnapWrite(day, pool, clean) {
+  if (!d1ok()) return false;
+  const uids = Object.keys(clean || {});
+  if (!uids.length) return true;
+  try {
+    const now = new Date().toISOString();
+    const stmts = uids.map(uid => DB.prepare(
+      'INSERT INTO snapshots (day,pool,uid,rate,rpc30,cnt,missions,dur,at) VALUES (?,?,?,?,?,?,?,?,?) ' +
+      'ON CONFLICT(day,pool,uid) DO UPDATE SET rate=excluded.rate, rpc30=excluded.rpc30, ' +
+      'cnt=excluded.cnt, missions=excluded.missions, dur=excluded.dur, at=excluded.at'
+    ).bind(day, pool, String(uid), clean[uid].rate, clean[uid].rpc30, clean[uid].cnt,
+           JSON.stringify(clean[uid].mis || {}), clean[uid].dur, now));
+    await DB.batch(stmts);
+    return true;
+  } catch (e) { console.error('D1 快照写入失败:', e && e.message); return false; }
 }
 
 // ---- 每日轮转分配 ----
@@ -1849,8 +1963,16 @@ async function handle(request) {
       if (!peerPass) return json({ message: '未开启跨群互听：请在 KV 添加 PEER_PASS 键' }, 503, CORS);
       const c = await cfg();
       if ((url.searchParams.get('pass') || '') !== peerPass) return json({ message: '口令错误' }, 403, CORS);
-      const pr = await pruneExpired();
-      const songs = [...new Set(pr.master.filter(e => e.song).map(e => String(e.song)))];
+      // 2026-10-22：这里原来调 pruneExpired()（= 全量重建 + 删键 + 写 master + 推 12 个 Secret）。
+      // 但这是「取歌单」这种只读高频接口，不该带写副作用。改为单条 SELECT DISTINCT，
+      // 过期号由 /api/pool（管理后台）或 resync 之类管理动作去清。
+      let songs;
+      const rows = d1ok()
+        ? await d1All("SELECT DISTINCT song FROM accounts WHERE pool=? AND song<>'' ORDER BY song", [POOL_NAME])
+        : null;
+      if (rows) songs = rows.map(r => String(r.song)).filter(Boolean);
+      else songs = (await mergePool()).map(e => String(e.song || '')).filter(Boolean);
+      songs = [...new Set(songs)].sort();
       return json({ ok: true, count: songs.length, songs: songs }, 200, CORS);
     }
     // ---- D1 分配接口（2026-10-22 新增）：run.py 直接问「本班跑哪些号、每号听什么」----
@@ -2163,12 +2285,19 @@ async function handle(request) {
         return json({ ok: true, dursMerged: dursChanged, note: '纯时长回填，未写快照' }, 200, CORS);
       }
       const key = 'snap:' + date + ':' + pool + ':' + slice;
+      // 2026-10-22：主存储改 D1 snapshots 表；KV 那份继续写（90 天 TTL）作为回退，
+      // 因为控制台读已经切 D1，KV 这份只在 D1 不可用时才会被读到。
+      const d1okSnap = await d1SnapWrite(date, pool, clean);
       try {
         await POOL.put(key, JSON.stringify({ ts: new Date().toISOString(), accs: clean }), { expirationTtl: 7776000 });
       } catch (e) {
-        return json({ message: '快照写入失败：' + ((e && e.message) || e) }, 500, CORS);
+        if (!d1okSnap) {
+          return json({ message: '快照写入失败：' + ((e && e.message) || e) }, 500, CORS);
+        }
+        // D1 已成功，KV 这份只是备份，写不进去不算失败
+        console.error('快照 KV 备份写入失败（D1 已成功）:', e && e.message);
       }
-      return json({ ok: true, key: key, count: Object.keys(clean).length }, 200, CORS);
+      return json({ ok: true, key: key, count: Object.keys(clean).length, d1: d1okSnap }, 200, CORS);
     }
     // 控制台数据聚合：两群账号列表（绝不下发 ck）+ 当日与前日快照（供日环比）
     if (url.pathname === '/api/console/data' && request.method === 'POST') {
@@ -2178,13 +2307,16 @@ async function handle(request) {
       if (!(await consoleAuth(body))) return json({ message: '账号或密码错误' }, 403, CORS);
       const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : beijingDate();
       const prevDate = dateMinus1(date);
-      const pr = await pruneExpired();
+      // 2026-10-22：控制台是高频只读接口，原来每刷新一次就跑 pruneExpired()（全量重建 +
+      // 可能删键 + 写 204KB master + 推 12 个 Secret）。改为直接读 D1 全表（一条 SELECT）。
+      // 过期号在页面上仍会按 exp 字段标红，真正的清理交给管理后台/resync。
+      const master = await mergePool();
       const disp = e => ({
         name: e.name || '', uid: e.uid != null ? String(e.uid) : '',
         song: e.song != null ? String(e.song) : '', added: e.added || '',
         email: e.email || '', phone: e.phone || '', noListen: !!e.noListen, exp: e.exp || '',
       });
-      const hz = pr.master.map(disp);
+      const hz = master.map(disp);
       // 定制群账号列表：实时向对端 worker 拉（对穿口令；拉失败不阻塞主群展示）
       // ⚠️ 对穿方向：本 worker 的 PEER_PASS 键存的是「定制群口令」，而定制群 worker 的 PEER_PASS 键
       //    存的是「本群口令」——所以调对端接口要用本群群口令 c.groupPass，不是本 worker 的 PEER_PASS。
@@ -2243,6 +2375,26 @@ async function consoleAuth(body) {
 // ---- 读一天的快照：聚合 snap:<date>:<pool>:<分片> 所有键 → { hz: {uid: acc}, dz: {uid: acc} } ----
 async function readSnapDay(date) {
   const out = { hz: {}, dz: {} };
+  // 2026-10-22：快照改读 D1 snapshots 表。原来是 list 一次 + 每个分片一次 get，
+  // 且 list 走 KV 配额；现在一条 SELECT 就拿到当天全部号。
+  if (d1ok()) {
+    const rows = await d1All('SELECT pool,uid,rate,rpc30,cnt,missions,dur FROM snapshots WHERE day=?', [date]);
+    if (rows) {
+      for (const r of rows) {
+        const pool = r.pool === 'dz' ? 'dz' : 'hz';
+        let mis = {};
+        try { mis = r.missions ? JSON.parse(r.missions) : {}; } catch (e) {}
+        const acc = { rate: r.rate == null ? null : Number(r.rate), rpc30: r.rpc30 == null ? null : Number(r.rpc30),
+                      cnt: r.cnt == null ? null : Number(r.cnt), mis: mis || {},
+                      dur: r.dur == null ? null : Number(r.dur) };
+        const prev = out[pool][r.uid];
+        // 同号同天多次写入时，保留 rpc30 更大（更新）的那份
+        if (!prev || ((acc.rpc30 || 0) >= (prev.rpc30 || 0))) out[pool][r.uid] = acc;
+      }
+      return out;
+    }
+  }
+  // ---- KV 回退路径 ----
   try {
     let cursor;
     do {
