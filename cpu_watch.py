@@ -32,6 +32,8 @@ SCRIPTS = ("cron-relay", "dingzhi")
 ALERT_TO = (os.environ.get("ALERT_TO") or "970515290@qq.com").strip()
 THRESH_MS = float(os.environ.get("CPU_THRESH_MS") or 9.5)
 LIMIT_MS = 10.0  # 免费版每请求 CPU 上限
+ERR_TRIP = int(os.environ.get("CPU_ERR_TRIP") or 3)   # 24h 错误数达到这个值就告警
+STRICT = (os.environ.get("CPU_ALERT_MODE") or "").strip().lower() == "strict"
 
 Q = """
 query ($acc: String!, $geq: String!, $leq: String!) {
@@ -130,8 +132,26 @@ def main():
             continue
         lines.append(f"- {name}: p50 {us(o['p50'])}（峰值小时 {us(o['p50max'])}）| "
                      f"p99(峰值) {us(o['p99max'])} | 请求 {o['req']} | 错误 {o['err']}")
-        if o["p50"] >= THRESH_MS * 1000:
-            alerts.append(f"{name} p50 = {us(o['p50'])}，已达阈值 {THRESH_MS}ms（上限 {LIMIT_MS}ms）")
+        # 判断规则（2026-10-22 定版）：
+        #   实测发现"p50 超过 10ms"本身并不等于出事——24h p50 20ms、p99 500ms 的这天，错误数依然是 0，
+        #   说明这个账号的请求并没有被 CPU 上限杀掉（要么额度不是 10ms，要么该指标包含等待时间）。
+        #   所以只在下面两种情况下才发信，避免每天一封无效告警：
+        #     ① 出现 CPU/未捕获异常类错误（真的在挂）；
+        #     ② p50 越过阈值「且」比之前 7 天均值恶化 50% 以上（真的在变坏）。
+        #   想恢复"只要过阈值就发"的字面行为：环境变量 CPU_ALERT_MODE=strict。
+        prev_avg = [v.get(name) for _, v in trend if v.get(name)]
+        base = sum(prev_avg) / len(prev_avg) if prev_avg else 0
+        o["base"] = int(base)
+        if o["err"] >= ERR_TRIP:
+            alerts.append(f"{name} 最近 24h 出现 {o['err']} 次错误（CPU 超限/未捕获异常），请检查")
+        elif o["p50"] >= THRESH_MS * 1000:
+            if STRICT:
+                alerts.append(f"{name} p50 = {us(o['p50'])}，已达阈值 {THRESH_MS}ms（上限 {LIMIT_MS}ms）")
+            elif base and o["p50"] >= base * 1.5:
+                alerts.append(f"{name} p50 = {us(o['p50'])}，达阈值 {THRESH_MS}ms 且比前 7 天均值 {us(int(base))} 恶化 "
+                              f"{o['p50'] / base:.1f} 倍")
+            else:
+                lines[-1] += f"｜已超阈值但未恶化（前 7 天均值 {us(int(base))}），仅记录不发信"
 
     print("[cpu] 最近 24h：")
     print("\n".join(lines))
@@ -144,14 +164,14 @@ def main():
 
     body = ["号主你好：", ""]
     if alerts:
-        body += ["Worker CPU 已接近免费版上限（每请求 10ms，超了整站 1102，页面和接口都会打不开）。", ""]
+        body += ["Worker CPU 出现异常，可能已经影响打开速度或接口成功率，看一眼为好。", ""]
         body += ["触发项："] + [f"  · {a}" for a in alerts] + [""]
     else:
         body += ["这是 CPU 预警通道的自测邮件（手动触发，非告警）。", ""]
 
     body += ["最近 24 小时："] + lines + [""]
     if trend:
-        body.append("最近 7 天 p50 走势（越接近 10ms 越危险）：")
+        body.append("最近 7 天 p50 走势（免费版上限 10ms；持续抬升才需要处理）：")
         for d, v in trend:
             body.append(f"  {d}  " + "  ".join(f"{k}={us(x)}" for k, x in v.items()))
         body.append("")
