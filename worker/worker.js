@@ -1962,12 +1962,14 @@ async function handle(request) {
       });
       const hz = pr.master.map(disp);
       // 定制群账号列表：实时向对端 worker 拉（对穿口令；拉失败不阻塞主群展示）
+      // ⚠️ 对穿方向：本 worker 的 PEER_PASS 键存的是「定制群口令」，而定制群 worker 的 PEER_PASS 键
+      //    存的是「本群口令」——所以调对端接口要用本群群口令 c.groupPass，不是本 worker 的 PEER_PASS。
       let dz = [];
       try {
+        const c2 = await cfg();
         const peerUrl = cleanKV(await POOL.get('PEER_URL')) || 'https://dz.xx1031.xyz';
-        const peerPass = cleanKV(await POOL.get('PEER_PASS'));
-        if (peerPass) {
-          const r = await fetch(peerUrl.replace(/\/+$/, '') + '/api/peer/pool?pass=' + encodeURIComponent(peerPass), { headers: { 'User-Agent': 'cron-relay-worker' } });
+        if (c2.groupPass) {
+          const r = await fetch(peerUrl.replace(/\/+$/, '') + '/api/peer/pool?pass=' + encodeURIComponent(c2.groupPass), { headers: { 'User-Agent': 'cron-relay-worker' } });
           const d = await r.json();
           if (d && d.ok) dz = (d.entries || []).map(disp);
         }
@@ -1984,10 +1986,11 @@ async function handle(request) {
       if (!(await consoleAuth(body))) return json({ message: '账号或密码错误' }, 403, CORS);
       if (body.pool === 'dz') {
         try {
+          const c3 = await cfg();
+          // 对穿方向见 /api/console/data 处注释：调对端要用本群群口令（对端 PEER_PASS 键里存的就是它）
           const peerUrl = (cleanKV(await POOL.get('PEER_URL')) || 'https://dz.xx1031.xyz').replace(/\/+$/, '');
-          const peerPass = cleanKV(await POOL.get('PEER_PASS'));
-          if (!peerPass) return json({ message: '未配置跨群口令（KV 键 PEER_PASS），无法编辑定制群账号' }, 503, CORS);
-          const fwd = { pass: peerPass, action: body.action, uid: body.uid, name: body.name,
+          if (!c3.groupPass) return json({ message: '本 worker 未配置群口令（KV 键 GROUP_PASS），无法编辑定制群账号' }, 503, CORS);
+          const fwd = { pass: c3.groupPass, action: body.action, uid: body.uid, name: body.name,
             ck: body.ck, link: body.link, email: body.email, exp: body.exp, noListen: body.noListen };
           const r = await fetch(peerUrl + '/api/peer/entry', { method: 'POST',
             headers: { 'Content-Type': 'application/json', 'User-Agent': 'cron-relay-worker' },
