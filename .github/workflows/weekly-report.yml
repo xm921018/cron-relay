@@ -1,0 +1,27 @@
+name: weekly-report
+
+# 每周号池汇总邮件（2026-10-22 新增）：北京每周一 09:20
+# 内容：两群人数/本周新增/清理失效/650 完成率/近 7 天快照覆盖。
+# 只读 D1，不改任何数据；发信失败不影响任何主流程。
+
+on:
+  schedule:
+    - cron: '20 1 * * 1'      # UTC 周一 01:20 ≈ 北京周一 09:20
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 汇总并发信
+        env:
+          CF_TOKEN: ${{ secrets.CF_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_AUTH_CODE: ${{ secrets.EMAIL_AUTH_CODE }}
+          ALERT_TO: '970515290@qq.com'
+        run: python3 weekly_report.py
