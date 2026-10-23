@@ -2866,7 +2866,7 @@ async function readSnapDay(date) {
         const pool = r.pool === 'dz' ? 'dz' : 'hz';
         let mis = {};
         try { mis = r.missions ? JSON.parse(r.missions) : {}; } catch (e) {}
-        // 2026-10-23：acc 增加 at（快照写入时间），供控制台「今rate」单元格显示采集时间，
+        // 2026-10-23：acc 增加 at（快照写入时间），供控制台「今进度」单元格显示采集时间，
         // 避免把凌晨边跑边采的旧值当成当前真实进度。KV 回退路径的 acc 没有 at，页面判空不显示。
         const acc = { rate: r.rate == null ? null : Number(r.rate), rpc30: r.rpc30 == null ? null : Number(r.rpc30),
                       cnt: r.cnt == null ? null : Number(r.cnt), mis: mis || {},
@@ -3251,16 +3251,16 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <span class="tab on" data-p="all">全部</span><span class="tab" data-p="hz">主群</span><span class="tab" data-p="dz">定制群</span>
     <input type="date" id="date">
     <input id="q" placeholder="搜索：账号 / 邮箱 / UID / 歌曲ID">
-    <select id="sort"><option value="default">排序：默认</option><option value="delta">排序：日涨幅↓</option><option value="rate">排序：今日rate↓</option></select>
+    <select id="sort"><option value="default">排序：默认</option><option value="delta">排序：日涨幅↓</option><option value="rate">排序：今日进度↓</option></select>
     <button class="mini" id="btnCsv">导出CSV</button>
     <button class="mini" id="btnRefresh">刷新</button>
     <button class="mini gray" id="btnOut">退出</button>
   </div>
   <div class="twrap"><table><thead><tr>
-    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th>昨rate</th><th>今rate</th><th>日环比</th><th>rpc30</th><th>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
+    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th>昨进度</th><th>今进度</th><th>日环比</th><th>近30日播放</th><th>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
   <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary><div id="deadList"></div></details>
-  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：rate=音乐人后台 650 任务进度（近30日滚动累计，会回吐）；rpc30=近30日有效播放次数；任务列=工作台子任务进度（网易接口不返回时为空，非链路故障）；日环比=今日快照-昨日快照，前一日无快照时显示 —（如定制群早期无数据），属数据断层非故障；时长=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，历史上这两类曾被时长Bug卡过有效播放，10-22 已修复）；<b>今rate 下的小字</b>=该行快照的采集时间（北京时间，凌晨轮次边跑边采的值不等于当天结算进度，10:00 snap650 补采上线后上午数据才是准数）；<b>已播未入任务</b>=rpc30&gt;0 但 rate=0（播放已发生未计入任务）；<b>N天未涨</b>=最近 7 天内连续 N 天 650 进度无增长（无快照的断层天跳过，N≥2 才标记）。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
+  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：进度=音乐人后台 650 任务播放进度（近30日滚动累计，会回吐）；近30日播放=工作台近期有效播放次数（累计只增不减）；任务列=工作台子任务进度（网易接口不返回时为空，非链路故障）；日环比=今日快照-昨日快照，前一日无快照时显示 —（如定制群早期无数据），属数据断层非故障；时长=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，历史上这两类曾被时长Bug卡过有效播放，10-22 已修复）；<b>今进度 下的小字</b>=该行快照的采集时间（北京时间，凌晨轮次边跑边采的值不等于当天结算进度，10:00 snap650 补采上线后上午数据才是准数）；<b>已播未入任务</b>=近30日播放&gt;0 但 650进度=0（播放已发生未计入任务）；<b>N天未涨</b>=最近 7 天内连续 N 天 650 进度无增长（无快照的断层天跳过，N≥2 才标记）。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
 </div>
 <div class="modal" id="modal" hidden><div class="mbox">
   <h3 id="mTitle">编辑账号</h3><p style="font-size:12px;color:#888;margin:4px 0 0" id="mSub"></p>
@@ -3303,7 +3303,7 @@ document.querySelectorAll('.tab').forEach(function(t){t.onclick=function(){
 function accsOf(day,pool){
   // 2026-10-23 修复：/api/console/data 返回的 snap 是 {cur:{hz,dz},prev:{hz,dz}}，
   // 这里原来按 snap[日期][池] 取 → 取不到，a/p 恒为 null，
-  // 导致「昨rate / 今rate / 日环比 / rpc30 / 任务」五列全空、今日有数据恒为 0。
+  // 导致「昨进度 / 今进度 / 日环比 / 近30日播放 / 任务」五列全空、今日有数据恒为 0。
   var S=DATA.snap||{};
   if(S.cur||S.prev){var src=(day&&day===DATA.prevDate)?S.prev:S.cur;return (src&&src[pool])||{};}
   return (S[day]&&S[day][pool])||{};
@@ -3355,7 +3355,7 @@ function render(){
   $('stats').innerHTML=
     '<div class="stat"><b>'+rows.length+'</b><span>账号总数</span></div>'
    +'<div class="stat"><b>'+withData.length+'</b><span>今日有数据</span></div>'
-   +'<div class="stat"><b>'+avg+'%</b><span>平均rate</span></div>'
+   +'<div class="stat"><b>'+avg+'%</b><span>平均进度</span></div>'
    +'<div class="stat"><b style="color:#c0392b">'+ups+'</b><span>上涨</span></div>'
    +'<div class="stat"><b style="color:#1e8449">'+downs+'</b><span>回吐/下跌</span></div>'
    +'<div class="stat'+(rows.length-withData.length?' warn':'')+'"><b>'+(rows.length-withData.length)+'</b><span>暂无快照</span></div>'
@@ -3463,7 +3463,7 @@ function doEdit(pool,e,action){
 }
 $('eCancel').onclick=function(){$('modal').hidden=true;};
 $('btnCsv').onclick=function(){
-  var rows=[['池','账号','UID','歌曲ID','时长(秒)','昨rate','今rate','日环比','rpc30','入池','有效期','邮箱','标记']];
+  var rows=[['池','账号','UID','歌曲ID','时长(秒)','昨进度','今进度','日环比','近30日播放','入池','有效期','邮箱','标记']];
   buildRows().forEach(function(r){
     var e=r.e;
     var dur=(DATA.durs||{})[e.uid]||((r.a&&r.a.dur)||'');
