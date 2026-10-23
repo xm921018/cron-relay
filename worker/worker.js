@@ -2690,13 +2690,26 @@ async function handle(request) {
       // 其中大部分是这七段 rtt 相加。这些读彼此没有任何依赖（唯一有依赖的是「拉对端账号列表」
       // 需要 cfg().groupPass，单独放在下面），一次 Promise.all 全部发出去即可。
       // 并发不会打爆 D1/KV：每一段都是单条 SELECT 或单键 get。
-      const [master, c2, cur, prev, dr, peerUrlRaw] = await Promise.all([
+      // 2026-10-23 第五批（运行状态上控制台，纯加法不改现有字段）：
+      //   plan      → buildPlan(date) 拿当天应跑名单（与 /api/coverage 同一口径：plans=listeners）
+      //   ranRows   → runs 表实跑名单
+      //   deadRows  → D1 dead_log 最近删号记录
+      //   suspectRows → accounts.suspect_at!='' 的待复核号（注意空串不是 NULL，不能写 IS NOT NULL）
+      //   freshRows → 各池当天快照最后写入时间（数据新鲜度）
+      //   actions   → 两仓库最近一次 run.yml 作业状态（fetchActionsStatus 内部带 KV 5 分钟缓存）
+      const [master, c2, cur, prev, dr, peerUrlRaw, plan, ranRows, deadRows, suspectRows, freshRows, actions] = await Promise.all([
         mergePool(),
         cfg(),
         readSnapDay(date),
         readSnapDay(prevDate),
         d1ok() ? d1All('SELECT uid,dur FROM durs') : Promise.resolve(null),
         POOL.get('PEER_URL').catch(() => null),
+        buildPlan(date).catch(() => null),
+        d1ok() ? d1All('SELECT pool,uid FROM runs WHERE day=?', [date]).catch(() => null) : Promise.resolve(null),
+        d1ok() ? d1All('SELECT pool,uid,name,reason,at FROM dead_log ORDER BY at DESC LIMIT 12').catch(() => null) : Promise.resolve(null),
+        d1ok() ? d1All("SELECT pool,uid,name,suspect_at FROM accounts WHERE suspect_at!=''").catch(() => null) : Promise.resolve(null),
+        d1ok() ? d1All('SELECT pool,MAX(at) AS last FROM snapshots WHERE day=? GROUP BY pool', [date]).catch(() => null) : Promise.resolve(null),
+        fetchActionsStatus(),
       ]);
       const disp = e => ({
         name: e.name || '', uid: e.uid != null ? String(e.uid) : '',
@@ -2724,7 +2737,32 @@ async function handle(request) {
       } else {
         try { durs = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
       }
-      return json({ ok: true, date: date, prevDate: prevDate, hz: hz, dz: dz, durs: durs, snap: { cur: cur, prev: prev } }, 200, CORS);
+      // ---- 2026-10-23 组装运行状态数据（纯加法：全部是新键，不影响 hz/dz/durs/snap）----
+      // coverage：应跑 vs 实跑。口径与 /api/coverage 逐字一致（expected=plans 里本池 uid，ran=runs 表）。
+      const cov = {};
+      if (plan && plan.ok && Array.isArray(plan.plans)) {
+        const ranByPool = {};
+        for (const r of (ranRows || [])) {
+          const p = r.pool === 'dz' ? 'dz' : 'hz';
+          (ranByPool[p] = ranByPool[p] || new Set()).add(String(r.uid));
+        }
+        for (const p of ['hz', 'dz']) {
+          const exp = plan.plans.filter(x => x.pool === p).map(x => String(x.uid));
+          const ranSet = ranByPool[p] || new Set();
+          const missing = exp.filter(u => !ranSet.has(u));
+          cov[p] = { expected: exp.length, ran: exp.length - missing.length,
+                     missing: missing.slice(0, 80),
+                     pct: exp.length ? Math.round((exp.length - missing.length) * 1000 / exp.length) / 10 : 0 };
+        }
+      }
+      const dead = (deadRows || []).map(r => ({ pool: r.pool === 'dz' ? 'dz' : 'hz', uid: String(r.uid || ''),
+                                                name: r.name || '', reason: r.reason || '', at: r.at || '' }));
+      const suspects = (suspectRows || []).map(r => ({ pool: r.pool === 'dz' ? 'dz' : 'hz', uid: String(r.uid || ''),
+                                                       name: r.name || '', since: r.suspect_at || '' }));
+      const fresh = {};
+      for (const r of (freshRows || [])) { fresh[r.pool === 'dz' ? 'dz' : 'hz'] = r.last || ''; }
+      return json({ ok: true, date: date, prevDate: prevDate, hz: hz, dz: dz, durs: durs, snap: { cur: cur, prev: prev },
+                    coverage: cov, actions: actions || [], dead: dead, suspects: suspects, fresh: fresh }, 200, CORS);
     }
     // 控制台编辑：hz 本地执行（与管理后台同一套逻辑）；dz 转发到对端 worker 的对等接口
     if (url.pathname === '/api/console/entry' && request.method === 'POST') {
@@ -2764,6 +2802,52 @@ async function consoleAuth(body) {
   const expect = cleanKV(await POOL.get('CONSOLE_PASS'));
   if (!expect) return false;
   return p === expect;
+}
+// ---- 2026-10-23：两仓库最近一次 run.yml 作业状态（供控制台「运行状态」横条）----
+// 以前「今晚 38/38 到底成没成」只能人工去 GitHub 翻，job 绿但分片静默失败也看不出来。
+// 拉概览 + job 明细数成功数；结果写 KV 缓存 5 分钟（GitHub token 限 5000 次/小时，
+// 控制台刷新一次 = 双仓库×2 请求，不缓存几分钟就能烧掉小半额度）。
+// dz 仓库名与 PEER_DEFAULT 同理属于「运行所需常量」写死；GH_TOKEN 未配置时返回空数组，页面显示「未配置」。
+async function fetchActionsStatus() {
+  const c = await cfg();
+  if (!c.ghToken) return [];
+  try {
+    const hit = await POOL.get('actions:cache');
+    if (hit) { const arr = JSON.parse(hit); if (Array.isArray(arr)) return arr; }
+  } catch (e) { /* 缓存读失败按没有处理 */ }
+  const repos = [
+    { pool: 'hz', owner: c.owner, repo: c.repo },
+    { pool: 'dz', owner: 'xm921017', repo: 'dingzhi' },
+  ];
+  const out = [];
+  for (const r of repos) {
+    try {
+      const base = 'https://api.github.com/repos/' + r.owner + '/' + r.repo;
+      const H = { Authorization: 'Bearer ' + c.ghToken, Accept: 'application/vnd.github+json',
+                  'User-Agent': 'cron-relay-worker' };
+      const T = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))]);
+      const rr = await T(fetch(base + '/actions/workflows/run.yml/runs?per_page=1&status=completed', { headers: H }));
+      if (!rr.ok) throw new Error('runs http ' + rr.status);
+      const rd = await rr.json();
+      const run = (rd.workflow_runs || [])[0];
+      if (!run) { out.push({ pool: r.pool, ok: false, note: '无运行记录' }); continue; }
+      let jobsOk = 0, jobsTotal = 0;
+      try {
+        const jr = await T(fetch(base + '/actions/runs/' + run.id + '/jobs?per_page=100', { headers: H }));
+        if (jr.ok) {
+          const jd = await jr.json();
+          jobsTotal = (jd.jobs || []).length;
+          jobsOk = (jd.jobs || []).filter(j => j.conclusion === 'success').length;
+        }
+      } catch (e) { /* job 明细拉失败不影响概览展示 */ }
+      out.push({ pool: r.pool, ok: true, conclusion: run.conclusion || '', created: run.created_at || '',
+                 run_id: run.id, jobs_ok: jobsOk, jobs_total: jobsTotal, url: run.html_url || '' });
+    } catch (e) {
+      out.push({ pool: r.pool, ok: false, note: String((e && e.message) || e).slice(0, 60) });
+    }
+  }
+  try { await POOL.put('actions:cache', JSON.stringify(out), { expirationTtl: 300 }); } catch (e) { /* 缓存写失败不致命 */ }
+  return out;
 }
 // ---- 读一天的快照：聚合 snap:<date>:<pool>:<分片> 所有键 → { hz: {uid: acc}, dz: {uid: acc} } ----
 async function readSnapDay(date) {
@@ -3093,6 +3177,14 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 .mbox input,.mbox select{width:100%}
 .row2{display:flex;gap:8px;margin-top:14px}.row2 button{flex:1}
 .mission{font-size:11px;color:#666;max-width:180px;overflow:hidden;text-overflow:ellipsis}
+.runbar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.rb{flex:1;min-width:170px;background:#fff;border:1px solid #e6e6e6;border-radius:10px;padding:8px 12px;font-size:12px;color:#555;line-height:1.5}
+.rb b{font-size:12.5px;color:#333}
+.rb .good{color:#3b6d11;font-weight:600}.rb .bad{color:#a32d2d;font-weight:600}.rb .muted{color:#999}
+.rb a{color:#3b6d11}
+.deadbox{margin:10px 0 0;font-size:12px;color:#555}
+.deadbox summary{cursor:pointer;color:#3b6d11;padding:4px 0}
+.deadbox table{margin-top:6px;border:1px solid #eee;border-radius:8px}
 </style></head><body>
 <div class="head"><h1 class="page-title">650 任务进阶控制台</h1><p class="page-sub">两群账号每日快照 · 数据由 Actions 播放时段顺带采集（T+1 可见）· CK 不在页面展示</p></div>
 <div class="abox" id="loginBox">
@@ -3105,6 +3197,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   <div class="msg" id="lm"></div>
 </div>
 <div class="abox" id="mainBox" hidden>
+  <div class="runbar" id="runbar"></div>
   <div class="stats" id="stats"></div>
   <div class="tools">
     <span class="tab on" data-p="all">全部</span><span class="tab" data-p="hz">主群</span><span class="tab" data-p="dz">定制群</span>
@@ -3118,7 +3211,8 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   <div class="twrap"><table><thead><tr>
     <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th>昨rate</th><th>今rate</th><th>日环比</th><th>rpc30</th><th>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
-  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：rate=音乐人后台 650 任务进度（近30日滚动累计，会回吐）；rpc30=近30日有效播放次数；任务列=工作台子任务进度；日环比=今日快照-昨日快照；时长=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，历史上这两类曾被时长Bug卡过有效播放，10-22 已修复）。</p>
+  <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary><div id="deadList"></div></details>
+  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：rate=音乐人后台 650 任务进度（近30日滚动累计，会回吐）；rpc30=近30日有效播放次数；任务列=工作台子任务进度（网易接口不返回时为空，非链路故障）；日环比=今日快照-昨日快照，前一日无快照时显示 —（如定制群早期无数据），属数据断层非故障；时长=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，历史上这两类曾被时长Bug卡过有效播放，10-22 已修复）。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间，10:00 snap650 补采上线后上午数据才是结算后准数）；今日删号/待复核来自 D1。</p>
 </div>
 <div class="modal" id="modal" hidden><div class="mbox">
   <h3 id="mTitle">编辑账号</h3><p style="font-size:12px;color:#888;margin:4px 0 0" id="mSub"></p>
@@ -3190,6 +3284,8 @@ function buildRows(){
 }
 function render(){
   if(!DATA)return;
+  var susSet={};(DATA.suspects||[]).forEach(function(s){susSet[String(s.uid)]=1;});
+  renderRunbar();
   var q=($('q').value||'').trim().toLowerCase();
   var rows=buildRows().filter(function(r){
     if(POOLF!=='all'&&r.pool!==POOLF)return false;
@@ -3204,13 +3300,17 @@ function render(){
   var ups=rows.filter(function(r){return r.delta!=null&&r.delta>0;}).length;
   var downs=rows.filter(function(r){return r.delta!=null&&r.delta<0;}).length;
   var avg=withData.length?Math.round(withData.reduce(function(s,r){return s+(r.a.rate||0);},0)/withData.length):0;
+  var done100=rows.filter(function(r){return r.a&&(r.a.rate||0)>=100;}).length;
+  var pendingIn=rows.filter(function(r){return r.e.added&&r.e.added>=DATA.date;}).length;
   $('stats').innerHTML=
     '<div class="stat"><b>'+rows.length+'</b><span>账号总数</span></div>'
    +'<div class="stat"><b>'+withData.length+'</b><span>今日有数据</span></div>'
    +'<div class="stat"><b>'+avg+'%</b><span>平均rate</span></div>'
    +'<div class="stat"><b style="color:#c0392b">'+ups+'</b><span>上涨</span></div>'
    +'<div class="stat"><b style="color:#1e8449">'+downs+'</b><span>回吐/下跌</span></div>'
-   +'<div class="stat'+(rows.length-withData.length?' warn':'')+'"><b>'+(rows.length-withData.length)+'</b><span>暂无快照</span></div>';
+   +'<div class="stat'+(rows.length-withData.length?' warn':'')+'"><b>'+(rows.length-withData.length)+'</b><span>暂无快照</span></div>'
+   +'<div class="stat"><b>'+done100+'</b><span>100%完成</span></div>'
+   +'<div class="stat'+(pendingIn?' warn':'')+'"><b>'+pendingIn+'</b><span>未入池(当日登记)</span></div>';
   var h='';
   rows.forEach(function(r,i){
     var e=r.e,a=r.a;
@@ -3226,6 +3326,8 @@ function render(){
         :(dur>336?'<span class="badge b-yellow" title="长歌：播放耗时长，拖慢单班进度">'+mm+':'+ss+'</span>'
         :'<span class="num">'+mm+':'+ss+'</span>');}
     var marks=(e.noListen?'<span class="badge b-red">只收</span>':'')+(!e.email?'<span class="badge b-yellow">无邮箱</span>':'')+(!a?'<span class="badge b-gray">无数据</span>':'');
+    if(e.added&&e.added>=DATA.date)marks+='<span class="badge b-gray" title="当天登记，次日才入池播放，不算漏播">未入池</span>';
+    if(susSet[String(e.uid)])marks+='<span class="badge b-yellow" title="D1 suspect_at 已标记，待人工复核">待复核</span>';
     h+='<tr><td class="num">'+(i+1)+'</td>'
       +'<td><span class="badge '+(r.pool==='hz'?'b-hz">主群':'b-dz">定制')+'</span></td>'
       +'<td>'+esc(e.name)+'</td><td class="num">'+esc(e.uid)+'</td><td class="num">'+song+'</td><td>'+durCell+'</td>'
@@ -3236,6 +3338,45 @@ function render(){
       +'<td><button class="mini" style="padding:4px 10px;font-size:12px" data-pool="'+r.pool+'" data-uid="'+esc(e.uid)+'" data-name="'+esc(e.name)+'">编辑</button></td></tr>';
   });
   $('tb').innerHTML=h||'<tr><td colspan="15" style="text-align:center;color:#999;padding:20px">没有匹配的账号</td></tr>';
+}
+// 2026-10-23：运行状态横条（作业状态/应跑实跑/快照新鲜度/今日删号与待复核）
+function bjTime(iso){if(!iso)return '';var d=new Date(iso);if(isNaN(d.getTime()))return '';var b=new Date(d.getTime()+8*3600*1000);return ('0'+(b.getUTCMonth()+1)).slice(-2)+'-'+('0'+b.getUTCDate()).slice(-2)+' '+('0'+b.getUTCHours()).slice(-2)+':'+('0'+b.getUTCMinutes()).slice(-2);}
+function renderRunbar(){
+  if(!DATA)return;
+  var A=DATA.actions||[],C=DATA.coverage||{},F=DATA.fresh||{},D=DATA.dead||[],S=DATA.suspects||[];
+  var h='';
+  A.forEach(function(a){
+    var label=a.pool==='hz'?'主群作业':'定制群作业';
+    if(a.ok){
+      var good=a.conclusion==='success';
+      var jobTxt=a.jobs_total?(' · '+a.jobs_ok+'/'+a.jobs_total+' job'):'';
+      h+='<div class="rb"><b>'+label+'</b> <span class="'+(good?'good':'bad')+'">'+(good?'✓ 成功':'✗ '+esc(a.conclusion||'失败'))+esc(jobTxt)+'</span><br>'
+        +'<span class="muted">'+bjTime(a.created)+(a.url?' · <a href="'+esc(a.url)+'" target="_blank">日志</a>':'')+'</span></div>';
+    }else{
+      h+='<div class="rb"><b>'+label+'</b> <span class="muted">'+(a.note?esc(a.note):'未配置')+'</span></div>';
+    }
+  });
+  var covH='';
+  ['hz','dz'].forEach(function(p){
+    var c=C[p];
+    if(!c){covH+='<span class="muted">'+(p==='hz'?'主群':'定制群')+':无计划</span> ';return;}
+    var cls=c.missing.length?'bad':'good';
+    covH+='<span class="'+cls+'">'+(p==='hz'?'主群':'定制群')+' '+c.ran+'/'+c.expected+(c.missing.length?' 缺'+c.missing.length:'')+'</span> ';
+  });
+  h+='<div class="rb"><b>应跑/实跑</b><br>'+covH+'</div>';
+  var fr='';
+  ['hz','dz'].forEach(function(p){if(F[p])fr+='<span class="muted">'+(p==='hz'?'主群':'定制群')+' '+bjTime(F[p])+'</span> ';});
+  h+='<div class="rb"><b>快照更新至</b><br>'+(fr||'<span class="muted">当日无快照</span>')+'</div>';
+  var deadToday=D.filter(function(d){return (d.at||'').slice(0,10)===DATA.date;}).length;
+  h+='<div class="rb"><b>当日删号</b> <span class="'+(deadToday?'bad':'muted')+'">'+deadToday+'</span> · <b>待复核</b> <span class="'+(S.length?'bad':'good')+'">'+S.length+'</span></div>';
+  $('runbar').innerHTML=h;
+  if(D.length||S.length){
+    $('deadBox').hidden=false;
+    var dh='';
+    D.forEach(function(d){dh+='<tr><td>'+(d.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(d.uid)+'</td><td>'+esc(d.name)+'</td><td>'+esc(d.reason||'')+'</td><td class="num">'+esc((d.at||'').slice(5,16))+'</td></tr>';});
+    S.forEach(function(s){dh+='<tr><td>'+(s.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(s.uid)+'</td><td>'+esc(s.name)+'</td><td colspan="2">待复核（suspect_at '+esc((s.since||'').slice(0,16))+'）</td></tr>';});
+    $('deadList').innerHTML='<table><thead><tr><th>池</th><th>UID</th><th>账号</th><th>原因</th><th>时间</th></tr></thead><tbody>'+dh+'</tbody></table>';
+  }
 }
 window.openEdit=function(pool,uid,name){
   $('eLink').value='';$('eEmail').value='';$('eExp').value='';$('eNo').value='';$('eCk').value='';$('em').textContent='';
