@@ -13,7 +13,7 @@
 需要的环境变量（GitHub Secrets 注入）：
   CF_TOKEN         Cloudflare API 令牌（需 Account Analytics:Read）
   CF_ACCOUNT_ID    账号 ID
-  ALERT_TO         告警收件邮箱（默认 970515290@qq.com）
+  ALERT_TO         告警收件邮箱（GitHub Secret 注入；未设置则跳过发信）
   EMAIL_FROM / EMAIL_AUTH_CODE  复用现成的 QQ 邮箱直邮通道
   CPU_THRESH_MS    阈值毫秒（默认 9.5）
 
@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 
 API = "https://api.cloudflare.com/client/v4/graphql"
 SCRIPTS = ("cron-relay", "dingzhi")
-ALERT_TO = (os.environ.get("ALERT_TO") or "970515290@qq.com").strip()
+ALERT_TO = (os.environ.get("ALERT_TO") or "").strip()
 THRESH_MS = float(os.environ.get("CPU_THRESH_MS") or 9.5)
 LIMIT_MS = 10.0  # 免费版每请求 CPU 上限
 ERR_TRIP = int(os.environ.get("CPU_ERR_TRIP") or 3)   # 24h 错误数达到这个值就告警
@@ -196,6 +196,9 @@ def main():
     subj = ("【网易音乐人650任务】Worker CPU 临近上限" if alerts
             else "【网易音乐人650任务】CPU 预警通道测试")
     try:
+        if not ALERT_TO:
+            print("[cpu] 未配置 ALERT_TO（GitHub Secret），跳过发信")
+            return 0
         from notify import send_user_email
         ok = send_user_email(ALERT_TO, subj, "\n".join(body))
         print(f"[cpu] 发信 {ALERT_TO}: {'成功' if ok else '失败'}")

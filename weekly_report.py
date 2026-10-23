@@ -8,7 +8,7 @@
 环境变量：
   CF_TOKEN / CF_ACCOUNT_ID / D1_UUID   读 D1
   EMAIL_FROM / EMAIL_AUTH_CODE         QQ 邮箱 SMTP（与其它邮件共用）
-  ALERT_TO                             收件人，默认 970515290@qq.com
+  ALERT_TO                             收件人（GitHub Secret 注入；未设置则跳过发信）
 
 用法：python weekly_report.py            # 打印 + 发信
       python weekly_report.py --dry      # 只打印不发信
@@ -121,7 +121,10 @@ def main():
     if "--dry" in sys.argv:
         print("\n[weekly] dry-run，未发信")
         return
-    to = os.environ.get("ALERT_TO", "970515290@qq.com")
+    to = (os.environ.get("ALERT_TO") or "").strip()
+    if not to:
+        print("[weekly] 未配置 ALERT_TO（GitHub Secret），跳过发信")
+        return
     ok = notify.send_user_email(to, f"【网易音乐人650任务】本周号池汇总 {today.isoformat()}", body)
     print(f"[weekly] 发信 {'成功' if ok else '失败'} → {to}")
 

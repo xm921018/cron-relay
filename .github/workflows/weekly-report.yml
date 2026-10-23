@@ -23,5 +23,5 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_AUTH_CODE: ${{ secrets.EMAIL_AUTH_CODE }}
-          ALERT_TO: '970515290@qq.com'
+          ALERT_TO: ${{ secrets.ALERT_TO }}
         run: python3 weekly_report.py
