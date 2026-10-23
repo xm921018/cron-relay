@@ -3214,9 +3214,10 @@ button.gray{background:#888}button.warn{background:#a32d2d}button:disabled{opaci
 .tools input{min-width:130px}.tools input#q{flex:1;min-width:160px}
 .tab{padding:8px 14px;border-radius:8px;background:#eee;color:#555;cursor:pointer;font-size:13px}
 .tab.on{background:#3b6d11;color:#fff}
-.twrap{overflow-x:auto;border:1px solid #eee;border-radius:10px}
+.twrap{overflow:auto;max-height:calc(100vh - 170px);border:1px solid #eee;border-radius:10px}
 table{border-collapse:collapse;width:100%;font-size:12.5px;white-space:nowrap}
-th{background:#f5f6f8;text-align:left;padding:8px 9px;color:#444;border-bottom:1px solid #eee;position:sticky;top:0}
+th{background:#f5f6f8;text-align:left;padding:8px 9px;color:#444;border-bottom:1px solid #eee}
+.twrap th{position:sticky;top:0;z-index:3;box-shadow:inset 0 -1px 0 #eee,0 1px 4px rgba(0,0,0,.05)}
 td{padding:7px 9px;border-bottom:1px solid #f2f2f2}
 tr:hover td{background:#fafdf5}
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:8px;margin-right:3px}
@@ -3306,6 +3307,14 @@ $('btnOut').onclick=function(){try{sessionStorage.removeItem('consToken');}catch
 $('btnRefresh').onclick=loadData;
 $('date').onchange=loadData;
 $('q').oninput=render;$('sort').onchange=render;
+// 2026-10-24：表格区高度自适应视口剩余空间 → 滚动发生在 .twrap 内部，配合 .twrap th 的 sticky 实现表头冻结
+function fitTable(){
+  var w=document.querySelector('.twrap');if(!w||!w.offsetParent)return;
+  var docTop=w.getBoundingClientRect().top+(window.pageYOffset||0);
+  var h=window.innerHeight-docTop-18;
+  w.style.maxHeight=(h>240?h:240)+'px';
+}
+window.addEventListener('resize',fitTable);
 document.querySelectorAll('.tab').forEach(function(t){t.onclick=function(){
   document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on');});
   t.classList.add('on');POOLF=t.getAttribute('data-p');render();};});
@@ -3323,7 +3332,7 @@ function loadData(){
   api('/api/console/data',{user:t.user,pass:t.pass,date:$('date').value||todayBJ()}).then(function(o){
     $('btnRefresh').disabled=false;
     if(!o.ok){$('lm').textContent=o.d.message||'请重新登录';$('lm').className='msg err';$('loginBox').hidden=false;$('mainBox').hidden=true;return;}
-    DATA=o.d;$('date').value=DATA.date;render();
+    DATA=o.d;$('date').value=DATA.date;render();fitTable();
   }).catch(function(){$('btnRefresh').disabled=false;});
 }
 function buildRows(){
