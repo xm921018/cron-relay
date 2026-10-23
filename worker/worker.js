@@ -2532,7 +2532,10 @@ async function handle(request) {
           rate: a.rate == null ? null : Number(a.rate) || 0,
           rpc30: a.rpc30 == null ? null : Number(a.rpc30) || 0,
           cnt: a.cnt == null ? null : Number(a.cnt) || 0,
-          mis: (a.mis && typeof a.mis === 'object') ? a.mis : {},
+          // 2026-10-23 修复：run.py 上报的字段名是 missions，这里原来只读 mis →
+          // 「任务」列永远空。两个名字都认，优先 mis。
+          mis: (a.mis && typeof a.mis === 'object') ? a.mis
+               : ((a.missions && typeof a.missions === 'object') ? a.missions : {}),
           dur: a.dur == null ? null : Number(a.dur) || 0,
         };
       }
@@ -3085,7 +3088,14 @@ $('q').oninput=render;$('sort').onchange=render;
 document.querySelectorAll('.tab').forEach(function(t){t.onclick=function(){
   document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on');});
   t.classList.add('on');POOLF=t.getAttribute('data-p');render();};});
-function accsOf(day,pool){return (DATA.snap[day]&&DATA.snap[day][pool])||{};}
+function accsOf(day,pool){
+  // 2026-10-23 修复：/api/console/data 返回的 snap 是 {cur:{hz,dz},prev:{hz,dz}}，
+  // 这里原来按 snap[日期][池] 取 → 取不到，a/p 恒为 null，
+  // 导致「昨rate / 今rate / 日环比 / rpc30 / 任务」五列全空、今日有数据恒为 0。
+  var S=DATA.snap||{};
+  if(S.cur||S.prev){var src=(day&&day===DATA.prevDate)?S.prev:S.cur;return (src&&src[pool])||{};}
+  return (S[day]&&S[day][pool])||{};
+}
 function loadData(){
   var t=JSON.parse(TOKEN||'{}');
   $('btnRefresh').disabled=true;
