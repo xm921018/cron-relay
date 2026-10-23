@@ -2702,7 +2702,7 @@ async function handle(request) {
         cfg(),
         readSnapDay(date),
         readSnapDay(prevDate),
-        d1ok() ? d1All('SELECT uid,dur FROM durs') : Promise.resolve(null),
+        d1ok() ? d1All('SELECT pool,uid,dur FROM durs') : Promise.resolve(null),
         POOL.get('PEER_URL').catch(() => null),
         buildPlan(date).catch(() => null),
         d1ok() ? d1All('SELECT pool,uid FROM runs WHERE day=?', [date]).catch(() => null) : Promise.resolve(null),
@@ -2736,7 +2736,16 @@ async function handle(request) {
       // 只有 D1 不可用时才回退 KV —— 那份现在已经只在 D1 写失败时才会被更新。
       let durs = {};
       if (dr) {
-        for (const r of dr) { if (r.uid && r.dur != null) durs[String(r.uid)] = Number(r.dur) || 0; }
+        // 2026-10-23：durs 表主键是 (pool,uid)，同一个号可能同时挂在两个群（实测 7 个），
+        // 之前只按 uid 拍平会让两池互相覆盖 → 时长显示成另一个群那首歌的。现在额外写一份
+        // 带池前缀的键「hz|uid」，页面优先用它；扁平键保留，兼容老页面与 KV 回退模式。
+        for (const r of dr) {
+          if (!r.uid || r.dur == null) continue;
+          const v = Number(r.dur) || 0;
+          const uid = String(r.uid);
+          durs[(r.pool === 'dz' ? 'dz' : 'hz') + '|' + uid] = v;
+          if (!(uid in durs)) durs[uid] = v;
+        }
       } else {
         try { durs = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
       }
@@ -3370,7 +3379,7 @@ function render(){
     var mis=a&&a.mis?Object.keys(a.mis).map(function(k){return k+' '+a.mis[k]+'%';}).join(' / '):'';
     var misCell=mis?'<span class="mission" title="'+esc(mis)+'">'+esc(mis)+'</span>':'<span class="flat">—</span>';
     var song=e.song?'<a class="song" target="_blank" href="https://music.163.com/song?id='+e.song+'">'+e.song+'</a>':'<span style="color:#bbb">公益</span>';
-    var dur=(DATA.durs||{})[e.uid]||((a&&a.dur)||0);
+    var dur=(DATA.durs||{})[r.pool+'|'+e.uid]||(DATA.durs||{})[e.uid]||((a&&a.dur)||0);
     var durCell='<span class="flat">—</span>';
     if(dur>0){var mm=Math.floor(dur/60),ss=('0'+(dur%60)).slice(-2);
       durCell=dur<132?'<span class="badge b-red" title="短歌：历史上曾被时长Bug卡过有效播放，修复(10-22)后应正常">'+mm+':'+ss+'</span>'
@@ -3466,7 +3475,7 @@ $('btnCsv').onclick=function(){
   var rows=[['池','账号','UID','歌曲ID','时长(秒)','昨进度','今进度','日环比','近30日播放','入池','有效期','邮箱','标记']];
   buildRows().forEach(function(r){
     var e=r.e;
-    var dur=(DATA.durs||{})[e.uid]||((r.a&&r.a.dur)||'');
+    var dur=(DATA.durs||{})[r.pool+'|'+e.uid]||(DATA.durs||{})[e.uid]||((r.a&&r.a.dur)||'');
     rows.push([r.pool==='hz'?'主群':'定制群',e.name,e.uid||'',e.song||'',dur,
       r.p&&r.p.rate!=null?r.p.rate:'',r.a&&r.a.rate!=null?r.a.rate:'',r.delta==null?'':r.delta,
       r.a&&r.a.rpc30!=null?r.a.rpc30:'',e.added||'',e.exp||'永久',e.email||'',e.noListen?'只收':'']);
