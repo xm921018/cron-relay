@@ -2697,7 +2697,7 @@ async function handle(request) {
       //   suspectRows → accounts.suspect_at!='' 的待复核号（注意空串不是 NULL，不能写 IS NOT NULL）
       //   freshRows → 各池当天快照最后写入时间（数据新鲜度）
       //   actions   → 两仓库最近一次 run.yml 作业状态（fetchActionsStatus 内部带 KV 5 分钟缓存）
-      const [master, c2, cur, prev, dr, peerUrlRaw, plan, ranRows, deadRows, suspectRows, freshRows, actions] = await Promise.all([
+      const [master, c2, cur, prev, dr, peerUrlRaw, plan, ranRows, deadRows, suspectRows, freshRows, actions, streakRows] = await Promise.all([
         mergePool(),
         cfg(),
         readSnapDay(date),
@@ -2710,6 +2710,9 @@ async function handle(request) {
         d1ok() ? d1All("SELECT pool,uid,name,suspect_at FROM accounts WHERE suspect_at!=''").catch(() => null) : Promise.resolve(null),
         d1ok() ? d1All('SELECT pool,MAX(at) AS last FROM snapshots WHERE day=? GROUP BY pool', [date]).catch(() => null) : Promise.resolve(null),
         fetchActionsStatus(),
+        // 2026-10-23：最近 7 天快照，用于「连续不涨天数」。date-6 起（含当天）；
+        // 改造前数据断层天的行不存在，calcStreaks 天然跳过。
+        d1ok() ? d1All('SELECT day,pool,uid,rate FROM snapshots WHERE day>=? AND day<=?', [dateMinusN(date, 6), date]).catch(() => null) : Promise.resolve(null),
       ]);
       const disp = e => ({
         name: e.name || '', uid: e.uid != null ? String(e.uid) : '',
@@ -2761,8 +2764,11 @@ async function handle(request) {
                                                        name: r.name || '', since: r.suspect_at || '' }));
       const fresh = {};
       for (const r of (freshRows || [])) { fresh[r.pool === 'dz' ? 'dz' : 'hz'] = r.last || ''; }
+      // 2026-10-23：连续不涨天数（>=2 天才有条目；查询失败时降级为空字典，页面无标记）
+      const streak = calcStreaks(streakRows || []);
       return json({ ok: true, date: date, prevDate: prevDate, hz: hz, dz: dz, durs: durs, snap: { cur: cur, prev: prev },
-                    coverage: cov, actions: actions || [], dead: dead, suspects: suspects, fresh: fresh }, 200, CORS);
+                    coverage: cov, actions: actions || [], dead: dead, suspects: suspects, fresh: fresh,
+                    streak: streak }, 200, CORS);
     }
     // 控制台编辑：hz 本地执行（与管理后台同一套逻辑）；dz 转发到对端 worker 的对等接口
     if (url.pathname === '/api/console/entry' && request.method === 'POST') {
@@ -2854,15 +2860,17 @@ async function readSnapDay(date) {
   // 2026-10-22：快照改读 D1 snapshots 表。原来是 list 一次 + 每个分片一次 get，
   // 且 list 走 KV 配额；现在一条 SELECT 就拿到当天全部号。
   if (d1ok()) {
-    const rows = await d1All('SELECT pool,uid,rate,rpc30,cnt,missions,dur FROM snapshots WHERE day=?', [date]);
+    const rows = await d1All('SELECT pool,uid,rate,rpc30,cnt,missions,dur,at FROM snapshots WHERE day=?', [date]);
     if (rows) {
       for (const r of rows) {
         const pool = r.pool === 'dz' ? 'dz' : 'hz';
         let mis = {};
         try { mis = r.missions ? JSON.parse(r.missions) : {}; } catch (e) {}
+        // 2026-10-23：acc 增加 at（快照写入时间），供控制台「今rate」单元格显示采集时间，
+        // 避免把凌晨边跑边采的旧值当成当前真实进度。KV 回退路径的 acc 没有 at，页面判空不显示。
         const acc = { rate: r.rate == null ? null : Number(r.rate), rpc30: r.rpc30 == null ? null : Number(r.rpc30),
                       cnt: r.cnt == null ? null : Number(r.cnt), mis: mis || {},
-                      dur: r.dur == null ? null : Number(r.dur) };
+                      dur: r.dur == null ? null : Number(r.dur), at: r.at || '' };
         const prev = out[pool][r.uid];
         // 同号同天多次写入时，保留 rpc30 更大（更新）的那份
         if (!prev || ((acc.rpc30 || 0) >= (prev.rpc30 || 0))) out[pool][r.uid] = acc;
@@ -2899,6 +2907,45 @@ function dateMinus1(dateStr) {
   const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
+}
+// ---- 北京日期减 N 天（N>=1；非法输入原样返回）----
+function dateMinusN(dateStr, n) {
+  let d = dateStr;
+  for (let i = 0; i < (n || 0); i++) d = dateMinus1(d);
+  return d;
+}
+// ---- 连续不涨天数（2026-10-23 控制台新增，纯计算无副作用）----
+// 输入：最近 N 天 snapshots 行（day,pool,uid,rate）。
+// 口径：按 (池,号,天) 取最大 rate（650 进度单调增，同一天多份写入取最新进度）；
+//       跳过无快照的天（数据断层不冤枉号）；从最新一天往前数连续 rate<=前一天 的天数；
+//       只有 >=2 的才收录（1 天不涨日环比列本身可见，避免满屏标记）。
+// 输出：{ hz:{uid:n}, dz:{uid:n} }
+function calcStreaks(rows) {
+  const byKey = {};
+  for (const r of (rows || [])) {
+    if (!r || r.rate == null) continue;
+    const pool = r.pool === 'dz' ? 'dz' : 'hz';
+    const k = pool + '|' + String(r.uid);
+    const day = String(r.day);
+    const v = Number(r.rate) || 0;
+    const m = byKey[k] || (byKey[k] = {});
+    if (m[day] == null || v > m[day]) m[day] = v;
+  }
+  const out = { hz: {}, dz: {} };
+  for (const k of Object.keys(byKey)) {
+    const days = Object.keys(byKey[k]).sort();
+    if (days.length < 2) continue;
+    let streak = 0;
+    for (let i = days.length - 1; i > 0; i--) {
+      if (byKey[k][days[i]] <= byKey[k][days[i - 1]]) streak++;
+      else break;
+    }
+    if (streak >= 2) {
+      const pool = k.slice(0, k.indexOf('|'));
+      out[pool][k.slice(k.indexOf('|') + 1)] = streak;
+    }
+  }
+  return out;
 }
 
 // ---- 账号编辑共用逻辑（2026-10-22 从 /api/admin/entry 抽出，行为与原实现逐行一致）----
@@ -3166,6 +3213,8 @@ tr:hover td{background:#fafdf5}
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:8px;margin-right:3px}
 .b-hz{background:#e8f2df;color:#3b6d11}.b-dz{background:#e3ecf7;color:#2d5aa3}
 .b-red{background:#fbe4e4;color:#a32d2d}.b-gray{background:#eee;color:#666}.b-yellow{background:#fdf3e3;color:#b06a00}
+.b-orange{background:#fdeee0;color:#b85c00}
+.snap-at{font-size:10px;color:#aaa;font-weight:400;margin-top:1px;line-height:1.2}
 .num{font-family:ui-monospace,Consolas,monospace;color:#555}
 a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 .up{color:#c0392b;font-weight:600}.down{color:#1e8449;font-weight:600}.flat{color:#999}
@@ -3211,7 +3260,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th>昨rate</th><th>今rate</th><th>日环比</th><th>rpc30</th><th>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
   <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary><div id="deadList"></div></details>
-  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：rate=音乐人后台 650 任务进度（近30日滚动累计，会回吐）；rpc30=近30日有效播放次数；任务列=工作台子任务进度（网易接口不返回时为空，非链路故障）；日环比=今日快照-昨日快照，前一日无快照时显示 —（如定制群早期无数据），属数据断层非故障；时长=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，历史上这两类曾被时长Bug卡过有效播放，10-22 已修复）。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间，10:00 snap650 补采上线后上午数据才是结算后准数）；今日删号/待复核来自 D1。</p>
+  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：rate=音乐人后台 650 任务进度（近30日滚动累计，会回吐）；rpc30=近30日有效播放次数；任务列=工作台子任务进度（网易接口不返回时为空，非链路故障）；日环比=今日快照-昨日快照，前一日无快照时显示 —（如定制群早期无数据），属数据断层非故障；时长=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，历史上这两类曾被时长Bug卡过有效播放，10-22 已修复）；<b>今rate 下的小字</b>=该行快照的采集时间（北京时间，凌晨轮次边跑边采的值不等于当天结算进度，10:00 snap650 补采上线后上午数据才是准数）；<b>已播未入任务</b>=rpc30&gt;0 但 rate=0（播放已发生未计入任务）；<b>N天未涨</b>=最近 7 天内连续 N 天 650 进度无增长（无快照的断层天跳过，N≥2 才标记）。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
 </div>
 <div class="modal" id="modal" hidden><div class="mbox">
   <h3 id="mTitle">编辑账号</h3><p style="font-size:12px;color:#888;margin:4px 0 0" id="mSub"></p>
@@ -3276,7 +3325,8 @@ function buildRows(){
     pd[1].forEach(function(e){
       var a=accsOf(DATA.date,pool)[e.uid]||null,p=accsOf(DATA.prevDate,pool)[e.uid]||null;
       var delta=(a&&p&&a.rate!=null&&p.rate!=null)?(a.rate-p.rate):null;
-      rows.push({pool:pool,e:e,a:a,p:p,delta:delta});
+      var st=(DATA.streak&&DATA.streak[pool]&&DATA.streak[pool][String(e.uid)])||0;
+      rows.push({pool:pool,e:e,a:a,p:p,delta:delta,streak:st});
     });
   });
   return rows;
@@ -3301,6 +3351,7 @@ function render(){
   var avg=withData.length?Math.round(withData.reduce(function(s,r){return s+(r.a.rate||0);},0)/withData.length):0;
   var done100=rows.filter(function(r){return r.a&&(r.a.rate||0)>=100;}).length;
   var pendingIn=rows.filter(function(r){return r.e.added&&r.e.added>=DATA.date;}).length;
+  var played0=rows.filter(function(r){return r.a&&r.a.rpc30!=null&&r.a.rpc30>0&&(r.a.rate||0)===0;}).length;
   $('stats').innerHTML=
     '<div class="stat"><b>'+rows.length+'</b><span>账号总数</span></div>'
    +'<div class="stat"><b>'+withData.length+'</b><span>今日有数据</span></div>'
@@ -3309,7 +3360,8 @@ function render(){
    +'<div class="stat"><b style="color:#1e8449">'+downs+'</b><span>回吐/下跌</span></div>'
    +'<div class="stat'+(rows.length-withData.length?' warn':'')+'"><b>'+(rows.length-withData.length)+'</b><span>暂无快照</span></div>'
    +'<div class="stat"><b>'+done100+'</b><span>100%完成</span></div>'
-   +'<div class="stat'+(pendingIn?' warn':'')+'"><b>'+pendingIn+'</b><span>未入池(当日登记)</span></div>';
+   +'<div class="stat'+(pendingIn?' warn':'')+'"><b>'+pendingIn+'</b><span>未入池(当日登记)</span></div>'
+   +'<div class="stat'+(played0?' warn':'')+'"><b>'+played0+'</b><span>已播未入任务</span></div>';
   var h='';
   rows.forEach(function(r,i){
     var e=r.e,a=r.a;
@@ -3327,10 +3379,14 @@ function render(){
     var marks=(e.noListen?'<span class="badge b-red">只收</span>':'')+(!e.email?'<span class="badge b-yellow">无邮箱</span>':'')+(!a?'<span class="badge b-gray">无数据</span>':'');
     if(e.added&&e.added>=DATA.date)marks+='<span class="badge b-gray" title="当天登记，次日才入池播放，不算漏播">未入池</span>';
     if(susSet[String(e.uid)])marks+='<span class="badge b-yellow" title="D1 suspect_at 已标记，待人工复核">待复核</span>';
+    // 2026-10-23：已播未入任务（rpc30>0 但 rate=0：播放真实发生但 650 进度没动，最早期的异常信号）
+    if(a&&a.rpc30!=null&&a.rpc30>0&&(a.rate||0)===0)marks+='<span class="badge b-orange" title="近30日播放次数大于 0，但 650 任务进度为 0：播放已发生未计入任务，重点盯">已播未入任务</span>';
+    // 2026-10-23：连续不涨（>=2 天，数据断层天已跳过；抓慢慢失效的号）
+    if(r.streak&&r.streak>=2)marks+='<span class="badge b-yellow" title="连续 '+r.streak+' 天 650 任务进度没有增长（无快照的数据断层天已跳过）">'+r.streak+'天未涨</span>';
     h+='<tr><td class="num">'+(i+1)+'</td>'
       +'<td><span class="badge '+(r.pool==='hz'?'b-hz">主群':'b-dz">定制')+'</span></td>'
       +'<td>'+esc(e.name)+'</td><td class="num">'+esc(e.uid)+'</td><td class="num">'+song+'</td><td>'+durCell+'</td>'
-      +'<td class="num">'+ratePrev+'</td><td class="num" style="font-weight:600">'+rateNow+'</td><td>'+dCell+'</td>'
+      +'<td class="num">'+ratePrev+'</td><td class="num" style="font-weight:600">'+rateNow+(a&&a.at?'<div class="snap-at">采于 '+bjTime(a.at)+'</div>':'')+'</td><td>'+dCell+'</td>'
       +'<td class="num">'+(a&&a.rpc30!=null?a.rpc30:'—')+'</td><td>'+misCell+'</td>'
       +'<td class="num">'+esc(e.added)+'</td><td class="num">'+esc(e.exp||'永久')+'</td>'
       +'<td>'+(marks||'<span style="color:#bbb">正常</span>')+'</td>'
