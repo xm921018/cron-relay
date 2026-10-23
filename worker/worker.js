@@ -2819,18 +2819,17 @@ async function fetchActionsStatus() {
     { pool: 'hz', owner: c.owner, repo: c.repo },
     { pool: 'dz', owner: 'xm921017', repo: 'dingzhi' },
   ];
-  const out = [];
-  for (const r of repos) {
+  const out = await Promise.all(repos.map(async (r) => {
     try {
       const base = 'https://api.github.com/repos/' + r.owner + '/' + r.repo;
       const H = { Authorization: 'Bearer ' + c.ghToken, Accept: 'application/vnd.github+json',
                   'User-Agent': 'cron-relay-worker' };
-      const T = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))]);
+      const T = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))]);
       const rr = await T(fetch(base + '/actions/workflows/run.yml/runs?per_page=1&status=completed', { headers: H }));
       if (!rr.ok) throw new Error('runs http ' + rr.status);
       const rd = await rr.json();
       const run = (rd.workflow_runs || [])[0];
-      if (!run) { out.push({ pool: r.pool, ok: false, note: '无运行记录' }); continue; }
+      if (!run) return { pool: r.pool, ok: false, note: '无运行记录' };
       let jobsOk = 0, jobsTotal = 0;
       try {
         const jr = await T(fetch(base + '/actions/runs/' + run.id + '/jobs?per_page=100', { headers: H }));
@@ -2840,12 +2839,12 @@ async function fetchActionsStatus() {
           jobsOk = (jd.jobs || []).filter(j => j.conclusion === 'success').length;
         }
       } catch (e) { /* job 明细拉失败不影响概览展示 */ }
-      out.push({ pool: r.pool, ok: true, conclusion: run.conclusion || '', created: run.created_at || '',
-                 run_id: run.id, jobs_ok: jobsOk, jobs_total: jobsTotal, url: run.html_url || '' });
+      return { pool: r.pool, ok: true, conclusion: run.conclusion || '', created: run.created_at || '',
+               run_id: run.id, jobs_ok: jobsOk, jobs_total: jobsTotal, url: run.html_url || '' };
     } catch (e) {
-      out.push({ pool: r.pool, ok: false, note: String((e && e.message) || e).slice(0, 60) });
+      return { pool: r.pool, ok: false, note: String((e && e.message) || e).slice(0, 60) };
     }
-  }
+  }));
   try { await POOL.put('actions:cache', JSON.stringify(out), { expirationTtl: 300 }); } catch (e) { /* 缓存写失败不致命 */ }
   return out;
 }
