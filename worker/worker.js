@@ -1355,19 +1355,31 @@ async function cfg() {
   // 带 5 分钟 TTL 的缓存（2026-10-13 修复：此前永久缓存，KV 里轮换 GH_TOKEN/群口令后
   // 要等 isolate 重启才生效）
   if (!_cfg || Date.now() - _cfgAt > 300000) {
-    _cfg = {
-      ghToken: cleanKV(await POOL.get('GH_TOKEN')),
-      groupPass: cleanKV(await POOL.get('GROUP_PASS')),
-      groupPass2: cleanKV(await POOL.get('GROUP_PASS2')),
-      adminPass: cleanKV(await POOL.get('ADMIN_PASS')),
+    // 2026-10-23：原来这里是 8 个串行 await（每个都是一次 KV get），冷启动时白白叠加 8 次 rtt。
+    // 改成一次并发读取；语义完全不变（同样的键、同样的默认值、同样的 5 分钟缓存）。
+    const [ghToken, groupPass, groupPass2, adminPass, assignPass, lim, limG1, limG2] = await Promise.all([
+      POOL.get('GH_TOKEN').catch(() => null),
+      POOL.get('GROUP_PASS').catch(() => null),
+      POOL.get('GROUP_PASS2').catch(() => null),
+      POOL.get('ADMIN_PASS').catch(() => null),
       // 分配接口独立口令（2026-10-22）：/api/assign 会下发明文 CK，绝不能用发给全体成员的群口令，
       // 否则任何成员循环 job=0..N 就能把全池 MUSIC_U 拖走。未配置时该接口直接拒绝服务。
-      assignPass: cleanKV(await POOL.get('ASSIGN_PASS')),
+      POOL.get('ASSIGN_PASS').catch(() => null),
+      POOL.get('POOL_LIMIT').catch(() => null),
+      POOL.get('POOL_LIMIT_G1').catch(() => null),
+      POOL.get('POOL_LIMIT_G2').catch(() => null),
+    ]);
+    _cfg = {
+      ghToken: cleanKV(ghToken),
+      groupPass: cleanKV(groupPass),
+      groupPass2: cleanKV(groupPass2),
+      adminPass: cleanKV(adminPass),
+      assignPass: cleanKV(assignPass),
       // 分群上限：2026-10-22 默认 500 → 1500，同日晚按「20 并发 + 24h 排队上限」下调到 1200
       // （KV 里 POOL_LIMIT_G1 / POOL_LIMIT_G2 仍可覆盖，改数字即时生效不用改代码）
-      poolLimit: parseInt(cleanKV(await POOL.get('POOL_LIMIT')), 10) || 1200,
-      poolLimitG1: parseInt(cleanKV(await POOL.get('POOL_LIMIT_G1')), 10) || 1200,
-      poolLimitG2: parseInt(cleanKV(await POOL.get('POOL_LIMIT_G2')), 10) || 500,
+      poolLimit: parseInt(cleanKV(lim), 10) || 1200,
+      poolLimitG1: parseInt(cleanKV(limG1), 10) || 1200,
+      poolLimitG2: parseInt(cleanKV(limG2), 10) || 500,
       owner: GH_OWNER,
       repo: GH_REPO,
     };
@@ -1794,6 +1806,9 @@ async function addEntry(entry) {
 // ====================================================================
 const POOL_NAME = 'hz';        // 主群；dingzhi 版为 'dz'
 const ASSIGN_TARGET = 30;      // 每首歌每天的目标听众数
+// 跨群互听/控制台拉对端的默认地址（KV 里 PEER_URL 可覆盖）。
+// 2026-10-23：dz.xx1031.xyz 已下线（该域名随旧邮件流到用户手里），定制版统一用 dingzhi.xx1031.xyz。
+const PEER_DEFAULT = 'https://dingzhi.xx1031.xyz';
 
 function d1ok() {
   try { return typeof DB !== 'undefined' && DB && typeof DB.prepare === 'function'; } catch (e) { return false; }
@@ -1902,8 +1917,12 @@ async function d1SnapWrite(day, pool, clean) {
     const now = new Date().toISOString();
     const stmts = uids.map(uid => DB.prepare(
       'INSERT INTO snapshots (day,pool,uid,rate,rpc30,cnt,missions,dur,at) VALUES (?,?,?,?,?,?,?,?,?) ' +
+      // 2026-10-23：dur 用 COALESCE —— 时长老早就由 run.py 在播放时写入，而 10:00 的补采任务
+      // 只关心 650 指标、手里没有时长，直接覆盖会把「时长」列清空。rate/rpc30/missions
+      // 必须原样覆盖（那正是补采的目的：用结算后的值替换凌晨的旧值）。
       'ON CONFLICT(day,pool,uid) DO UPDATE SET rate=excluded.rate, rpc30=excluded.rpc30, ' +
-      'cnt=excluded.cnt, missions=excluded.missions, dur=excluded.dur, at=excluded.at'
+      'cnt=COALESCE(excluded.cnt, snapshots.cnt), missions=excluded.missions, ' +
+      'dur=COALESCE(excluded.dur, snapshots.dur), at=excluded.at'
     ).bind(day, pool, String(uid), clean[uid].rate, clean[uid].rpc30, clean[uid].cnt,
            JSON.stringify(clean[uid].mis || {}), clean[uid].dur, now));
     await DB.batch(stmts);
@@ -2476,17 +2495,23 @@ async function handle(request) {
       const deadEntries = master.filter(e => deadSet.has(String(e.name)) || deadSet.has(String(e.uid)));
       if (!deadEntries.length) return json({ message: `没有匹配到账号（号池 ${before} 个）。` });
 
-      // ---- 死号双重确认（2026-10-22）----
-      // 网易风控/限流时会出现「code 200 但 profile 缺失、每日推荐 0 首」，一次判定就把活号
-      // 永久删掉，号主得重新登记。改为：第一次判死只打标 suspect_at；隔 18~36 小时
-      // （即紧接着的下一轮）再次判死才真删。窗口外（同一天重复上报 / 太久以前的旧记录）
-      // 一律重新打标，避免「一个月前疑似过」被当成今天的确诊。
-      const susRows = await d1All('SELECT uid,suspect_at FROM accounts WHERE pool=?', [POOL_NAME]);
+      // ---- 死号判定（2026-10-23 改版：客户端重试 + 立即删除）----
+      // 旧逻辑（2026-10-22）：第一次判死只打 suspect_at，隔 18~36 小时下一轮再判死才真删。
+      // 问题：号主要白等一整天，期间「已判死但还挂在池子里」的号既不能听也不能被听，
+      // 客服也没法提前帮他重新登记。
+      // 新逻辑：客户端（run.py）在判死前已经重试过 3 次（要求至少 2 次明确失效），
+      // 确认之后带 confirm=true 上报 → 服务端直接删号；客户端随即给号主发「账号信息过期」邮件。
+      // 也就是说「确认」这一步从服务端的时间窗口挪到了客户端的重试，效果等价但不用等一天。
+      // 不带 confirm 的旧客户端仍走原来的 suspect_at 双重确认，向后兼容。
+      const forceConfirm = body.confirm === true;
+      const susRows = forceConfirm ? null
+        : await d1All('SELECT uid,suspect_at FROM accounts WHERE pool=?', [POOL_NAME]);
       const susMap = {};
       if (susRows) for (const r of susRows) susMap[String(r.uid)] = String(r.suspect_at || '');
       const nowMs = Date.now();
       const suspects = [], confirmed = [];
       for (const e of deadEntries) {
+        if (forceConfirm) { confirmed.push(e); continue; }   // 客户端已重试确认 → 直接删
         if (!susRows) { suspects.push(e); continue; }        // D1 读不到 → 无法确认，保守只打标不删
         const prev = susMap[String(e.uid)] || '';
         const t = prev ? Date.parse(prev) : NaN;
@@ -2518,7 +2543,11 @@ async function handle(request) {
       await pushPool(after);
       try { await refreshPoolSnap(); } catch (e) {}
       const nm = arr => arr.map(e => e.name || e.uid).join('、');
-      return json({ message: `本次确认清理 ${confirmed.length} 个${confirmed.length ? '（' + nm(confirmed) + '）' : ''}；`
+      // deleted：真正被删掉的号名。run.py 靠它决定「给谁发过期邮件」——
+      // 只有删成功了才发，避免「邮件说已删除、号其实还在池里」。
+      const deleted = confirmed.map(e => e.name || String(e.uid));
+      return json({ ok: true, deleted: deleted,
+        message: `本次确认清理 ${confirmed.length} 个${confirmed.length ? '（' + nm(confirmed) + '）' : ''}；`
         + `新增疑似 ${suspects.length} 个（需下一轮再次判死才删除${suspects.length ? '：' + nm(suspects) : ''}），`
         + `剩余 ${after.length} 个。` });
     }
@@ -2655,7 +2684,20 @@ async function handle(request) {
       // 2026-10-22：控制台是高频只读接口，原来每刷新一次就跑 pruneExpired()（全量重建 +
       // 可能删键 + 写 204KB master + 推 12 个 Secret）。改为直接读 D1 全表（一条 SELECT）。
       // 过期号在页面上仍会按 exp 字段标红，真正的清理交给管理后台/resync。
-      const master = await mergePool();
+      //
+      // 2026-10-23：并发化。原来这一段是 7 段串行 await（鉴权后的读全池 → 读配置 → 读对端地址
+      // → fetch 对端 worker → 读今日快照 → 读昨日快照 → 读时长表），实测业务耗时 1.0~1.75s，
+      // 其中大部分是这七段 rtt 相加。这些读彼此没有任何依赖（唯一有依赖的是「拉对端账号列表」
+      // 需要 cfg().groupPass，单独放在下面），一次 Promise.all 全部发出去即可。
+      // 并发不会打爆 D1/KV：每一段都是单条 SELECT 或单键 get。
+      const [master, c2, cur, prev, dr, peerUrlRaw] = await Promise.all([
+        mergePool(),
+        cfg(),
+        readSnapDay(date),
+        readSnapDay(prevDate),
+        d1ok() ? d1All('SELECT uid,dur FROM durs') : Promise.resolve(null),
+        POOL.get('PEER_URL').catch(() => null),
+      ]);
       const disp = e => ({
         name: e.name || '', uid: e.uid != null ? String(e.uid) : '',
         song: e.song != null ? String(e.song) : '', added: e.added || '',
@@ -2667,20 +2709,16 @@ async function handle(request) {
       //    存的是「本群口令」——所以调对端接口要用本群群口令 c.groupPass，不是本 worker 的 PEER_PASS。
       let dz = [];
       try {
-        const c2 = await cfg();
-        const peerUrl = cleanKV(await POOL.get('PEER_URL')) || 'https://dz.xx1031.xyz';
+        const peerUrl = cleanKV(peerUrlRaw) || PEER_DEFAULT;
         if (c2.groupPass) {
           const r = await fetch(peerUrl.replace(/\/+$/, '') + '/api/peer/pool?pass=' + encodeURIComponent(c2.groupPass), { headers: { 'User-Agent': 'cron-relay-worker' } });
           const d = await r.json();
           if (d && d.ok) dz = (d.entries || []).map(disp);
         }
       } catch (e) { /* 对端不可达：dz 列表留空，页面会提示 */ }
-      const cur = await readSnapDay(date);
-      const prev = await readSnapDay(prevDate);
       // 2026-10-22 第三批：D1 可用时不再读 KV 的 console:durs（省一次读，也不会读到旧值）。
       // 只有 D1 不可用时才回退 KV —— 那份现在已经只在 D1 写失败时才会被更新。
       let durs = {};
-      const dr = d1ok() ? await d1All('SELECT uid,dur FROM durs') : null;
       if (dr) {
         for (const r of dr) { if (r.uid && r.dur != null) durs[String(r.uid)] = Number(r.dur) || 0; }
       } else {
@@ -2698,7 +2736,7 @@ async function handle(request) {
         try {
           const c3 = await cfg();
           // 对穿方向见 /api/console/data 处注释：调对端要用本群群口令（对端 PEER_PASS 键里存的就是它）
-          const peerUrl = (cleanKV(await POOL.get('PEER_URL')) || 'https://dz.xx1031.xyz').replace(/\/+$/, '');
+          const peerUrl = (cleanKV(await POOL.get('PEER_URL')) || PEER_DEFAULT).replace(/\/+$/, '');
           if (!c3.groupPass) return json({ message: '本 worker 未配置群口令（KV 键 GROUP_PASS），无法编辑定制群账号' }, 503, CORS);
           const fwd = { pass: c3.groupPass, action: body.action, uid: body.uid, name: body.name,
             ck: body.ck, link: body.link, email: body.email, exp: body.exp, noListen: body.noListen };
