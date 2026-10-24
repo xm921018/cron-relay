@@ -3235,6 +3235,14 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 .mbox input,.mbox select{width:100%}
 .row2{display:flex;gap:8px;margin-top:14px}.row2 button{flex:1}
 .mission{font-size:11px;color:#666;max-width:180px;overflow:hidden;text-overflow:ellipsis}
+.mtag{display:inline-block;font-size:11px;background:#f1f2f4;color:#666;border-radius:6px;padding:1px 6px;margin-right:3px;white-space:nowrap}
+.mtag i{font-style:normal;color:#999}
+.lgd{font-size:12px;color:#555;line-height:1.85}
+.lgd b{color:#333}
+.lgd code{background:#f4f4f6;border-radius:4px;padding:1px 5px;font-size:11px;color:#a33}
+.lgd table{white-space:normal;margin:6px 0 2px}
+.lgd td,.lgd th{vertical-align:top;padding:5px 8px;font-size:12px}
+.lgd .badge{white-space:nowrap}
 .runbar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
 .rb{flex:1;min-width:170px;background:#fff;border:1px solid #e6e6e6;border-radius:10px;padding:8px 12px;font-size:12px;color:#555;line-height:1.5}
 .rb b{font-size:12.5px;color:#333}
@@ -3267,10 +3275,31 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <button class="mini gray" id="btnOut">退出</button>
   </div>
   <div class="twrap"><table><thead><tr>
-    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th>昨进度</th><th>今进度</th><th>日环比</th><th>近30日播放</th><th>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
+    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
   <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary><div id="deadList"></div></details>
-  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：进度=音乐人后台 650 任务播放进度（近30日滚动累计，会回吐）；近30日播放=工作台近期有效播放次数（累计只增不减）；任务列=工作台子任务进度（网易接口不返回时为空，非链路故障）；日环比=今日快照-昨日快照，前一日无快照时显示 —（如定制群早期无数据），属数据断层非故障；时长=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，历史上这两类曾被时长Bug卡过有效播放，10-22 已修复）；<b>今进度 下的小字</b>=该行快照的采集时间（北京时间，凌晨轮次边跑边采的值不等于当天结算进度，10:00 snap650 补采上线后上午数据才是准数）；<b>已播未入任务</b>=近30日播放&gt;0 但 650进度=0（播放已发生未计入任务）；<b>N天未涨</b>=最近 7 天内连续 N 天 650 进度无增长（无快照的断层天跳过，N≥2 才标记）。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
+  <details class="deadbox" id="legendBox"><summary><b>标记看不懂 / 数字怎么读？点开这份对照表</b></summary><div class="lgd">
+    <b>一、先认清三个数（别再混）：</b>「650进度」= 音乐人后台的 650 任务完成度，100% 才算做完，是唯一有意义的成绩；「近30日播放量」= 工作台统计的播放次数，刷再多也不直接等于进度；「其他任务」= 网易塞在同一组里的另一个小任务（多半是「发布笔记」），跟播放和 650 一点关系都没有，一列显示「—」也是正常的。
+    <br><b>二、标记对照：</b>
+    <table><thead><tr><th>标记</th><th>意思</th><th>要不要管</th></tr></thead><tbody>
+    <tr><td><span class="badge b-gray">今日无数据</span></td><td>今天这一轮没采到该号的快照（接口超时或号没跑）</td><td>偶尔出现不用管，连续几天要查</td></tr>
+    <tr><td><span class="badge b-gray">次日起播</span></td><td>今天刚登记，明天才进轮转开始被听</td><td>正常，不用管</td></tr>
+    <tr><td><span class="badge b-gray">只收不听</span></td><td>号主自己关了互听，只接收别人的播放，不给别人播</td><td>号主的选择，不用管</td></tr>
+    <tr><td><span class="badge b-yellow">未绑邮箱</span></td><td>没填通知邮箱，号失效时通知不到人</td><td>能补就补，不影响播放</td></tr>
+    <tr><td><span class="badge b-yellow">待复核</span></td><td>登录已失效被系统判死，等下一轮再确认就删号</td><td>要管：让号主换 CK</td></tr>
+    <tr><td><span class="badge b-gray">无650任务</span></td><td>后台没返回 650 任务（不是音乐人 / 没报名该任务 / 歌曲未通过审核）</td><td>要管：让号主去音乐人后台确认</td></tr>
+    <tr><td><span class="badge b-orange">播放涨·650不动</span></td><td>近30日播放量有，但 650 进度是 0%：播放没被算成「有效播放」</td><td>要管：重点盯，见下面第三节</td></tr>
+    <tr><td><span class="badge b-yellow">今日零增长</span></td><td>650 进度和昨天完全一样（还没到 100%）</td><td>先观察 2~3 天，不是每天都一定涨</td></tr>
+    <tr><td><span class="badge b-yellow">N天未涨</span></td><td>连续 N 天 650 进度一点没动（没有快照的断档天不计）</td><td>连续 4 天以上要看</td></tr>
+    <tr><td><span class="badge b-red">只收</span>/<span class="badge b-yellow">长歌</span>（时长列）</td><td>时长 <b>2:12 以下</b>标红、<b>5:36 以上</b>标黄</td><td>只是提示，10-22 修完后长短歌都能正常计入</td></tr>
+    </tbody></table>
+    <b>三、为什么没到 100% 却一天都没涨？</b>不是每天都该涨，三个原因按概率从高到低：
+    <br>① <b>650 是后台分批结算的，不是实时加</b>：实测中位号一晚能跳 +30~40%，然后停一两天再突然跳一大截，所以「今天 0」很常见；
+    <br>② <b>近 30 天滚动，会回吐</b>：30 天前的老播放到期退出，当天新增的有效播放少于退出的，进度就原地甚至下降（绿色负数就是这个）；
+    <br>③ <b>播放 ≠ 有效播放</b>：网易按账号/IP/完整播放去重，同一个出口刷的量会被合并或丢掉。「播放涨·650不动」就是这一类的信号。
+    <br><b>所以判断号有没有问题，看「今日零增长」连续几天 + 「近30日播放量」在涨还是在跌</b>：播放量也在跌 = 自然衰减（30天老量退出），播放量在涨但 650 一直不动 = 播放被判无效，才需要人工查。
+  </div></details>
+  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：<b>650进度</b>=音乐人后台 650 任务完成度（近30日滚动，会回吐，100%=达标）；<b>近30日播放量</b>=工作台播放次数（≠有效播放，≠650进度）；<b>较昨日</b>=今天快照-昨天快照，前一日无快照显示 —（数据断层，非故障）；<b>其他任务</b>=与 650 无关的同组小任务（如发布笔记），显示 — 表示只有 650 一个任务；<b>时长</b>=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，仅提示，10-22 修完后都能正常计入）；<b>今日进度下的小字</b>=该行快照采集时间（北京时间；凌晨轮次边跑边采，不代表当天最终值，10:00 补采后的数才准）；各标记含义见上方「标记看不懂」对照表。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
 </div>
 <div class="modal" id="modal" hidden><div class="mbox">
   <h3 id="mTitle">编辑账号</h3><p style="font-size:12px;color:#888;margin:4px 0 0" id="mSub"></p>
@@ -3335,6 +3364,21 @@ function loadData(){
     DATA=o.d;$('date').value=DATA.date;render();fitTable();
   }).catch(function(){$('btnRefresh').disabled=false;});
 }
+// 2026-10-24：网易工作台只回 missionCode + progressRate 两个原始字段，不翻译就是一串天书；
+// 而且原来把「650 主任务」和「发布笔记」两个代码拼在一格还带 CSS 截断，看着像 650 只有 2%。
+var MAIN_MISSION='mission_code_recently_play_effect_count_v2';   // 650 有效播放，与「今日650进度」列同一个数
+var MIS_NAME={mission_code_musician_notebook_publish:'发布笔记'};  // 网易同组小任务，与播放无关
+function misName(k){if(MIS_NAME[k])return MIS_NAME[k];return String(k).replace(/^mission_code_/,'').replace(/_v\\d+$/,'').replace(/_/g,' ');}
+// 「其他任务」列：650 主任务已在进度列显示，这里只列其余小任务并译成中文；没有就显示 —
+function otherMis(a){
+  if(!a||!a.mis)return '<span class="flat">—</span>';
+  var h='';
+  Object.keys(a.mis).forEach(function(k){
+    if(k===MAIN_MISSION)return;
+    h+='<span class="mtag">'+esc(misName(k))+' <i>'+a.mis[k]+'%</i></span>';
+  });
+  return h||'<span class="flat">—</span>';
+}
 function buildRows(){
   if(!DATA)return[];
   var cur=DATA.snap.cur,prev=DATA.snap.prev,rows=[];
@@ -3370,37 +3414,46 @@ function render(){
   var done100=rows.filter(function(r){return r.a&&(r.a.rate||0)>=100;}).length;
   var pendingIn=rows.filter(function(r){return r.e.added&&r.e.added>=DATA.date;}).length;
   var played0=rows.filter(function(r){return r.a&&r.a.rpc30!=null&&r.a.rpc30>0&&(r.a.rate||0)===0;}).length;
+  // 2026-10-24：今日零增长 = 未到 100% 但 650 进度与昨天一致（用户最常问的那一类，单列一张卡）
+  var zeroGrow=rows.filter(function(r){return r.a&&r.p&&r.a.rate!=null&&r.p.rate!=null&&r.a.rate<100&&(r.a.rate-r.p.rate)===0;}).length;
   $('stats').innerHTML=
     '<div class="stat"><b>'+rows.length+'</b><span>账号总数</span></div>'
    +'<div class="stat"><b>'+withData.length+'</b><span>今日有数据</span></div>'
-   +'<div class="stat"><b>'+avg+'%</b><span>平均进度</span></div>'
-   +'<div class="stat"><b style="color:#c0392b">'+ups+'</b><span>上涨</span></div>'
-   +'<div class="stat"><b style="color:#1e8449">'+downs+'</b><span>回吐/下跌</span></div>'
-   +'<div class="stat'+(rows.length-withData.length?' warn':'')+'"><b>'+(rows.length-withData.length)+'</b><span>暂无快照</span></div>'
-   +'<div class="stat"><b>'+done100+'</b><span>100%完成</span></div>'
-   +'<div class="stat'+(pendingIn?' warn':'')+'"><b>'+pendingIn+'</b><span>未入池(当日登记)</span></div>'
-   +'<div class="stat'+(played0?' warn':'')+'"><b>'+played0+'</b><span>已播未入任务</span></div>';
+   +'<div class="stat"><b>'+avg+'%</b><span>平均650进度</span></div>'
+   +'<div class="stat"><b style="color:#c0392b">'+ups+'</b><span>今日上涨</span></div>'
+   +'<div class="stat"><b style="color:#1e8449">'+downs+'</b><span>今日下跌</span></div>'
+   +'<div class="stat'+(zeroGrow?' warn':'')+'"><b>'+zeroGrow+'</b><span>今日零增长</span></div>'
+   +'<div class="stat'+(rows.length-withData.length?' warn':'')+'"><b>'+(rows.length-withData.length)+'</b><span>今日无快照</span></div>'
+   +'<div class="stat"><b>'+done100+'</b><span>已达100%</span></div>'
+   +'<div class="stat'+(pendingIn?' warn':'')+'"><b>'+pendingIn+'</b><span>次日才入池</span></div>'
+   +'<div class="stat'+(played0?' warn':'')+'"><b>'+played0+'</b><span>播放涨·650不动</span></div>';
   var h='';
   rows.forEach(function(r,i){
     var e=r.e,a=r.a;
     var rateNow=a&&a.rate!=null?a.rate:'—',ratePrev=r.p&&r.p.rate!=null?r.p.rate:'—';
     var dCell=r.delta==null?'<span class="flat">—</span>':(r.delta>0?'<span class="up">+'+r.delta+'</span>':(r.delta<0?'<span class="down">'+r.delta+'</span>':'<span class="flat">0</span>'));
-    var mis=a&&a.mis?Object.keys(a.mis).map(function(k){return k+' '+a.mis[k]+'%';}).join(' / '):'';
-    var misCell=mis?'<span class="mission" title="'+esc(mis)+'">'+esc(mis)+'</span>':'<span class="flat">—</span>';
+    var misCell=otherMis(a);
     var song=e.song?'<a class="song" target="_blank" href="https://music.163.com/song?id='+e.song+'">'+e.song+'</a>':'<span style="color:#bbb">公益</span>';
     var dur=(DATA.durs||{})[r.pool+'|'+e.uid]||(DATA.durs||{})[e.uid]||((a&&a.dur)||0);
     var durCell='<span class="flat">—</span>';
     if(dur>0){var mm=Math.floor(dur/60),ss=('0'+(dur%60)).slice(-2);
-      durCell=dur<132?'<span class="badge b-red" title="短歌：历史上曾被时长Bug卡过有效播放，修复(10-22)后应正常">'+mm+':'+ss+'</span>'
-        :(dur>336?'<span class="badge b-yellow" title="长歌：播放耗时长，拖慢单班进度">'+mm+':'+ss+'</span>'
+      durCell=dur<132?'<span class="badge b-red" title="短歌（不到 2:12）：10-22 时长 Bug 已修，现在短歌也能正常计入，这里只是提示">'+mm+':'+ss+'</span>'
+        :(dur>336?'<span class="badge b-yellow" title="长歌（超过 5:36）：单次播放耗时长，会拖慢单班进度">'+mm+':'+ss+'</span>'
         :'<span class="num">'+mm+':'+ss+'</span>');}
-    var marks=(e.noListen?'<span class="badge b-red">只收</span>':'')+(!e.email?'<span class="badge b-yellow">无邮箱</span>':'')+(!a?'<span class="badge b-gray">无数据</span>':'');
-    if(e.added&&e.added>=DATA.date)marks+='<span class="badge b-gray" title="当天登记，次日才入池播放，不算漏播">未入池</span>';
-    if(susSet[String(e.uid)])marks+='<span class="badge b-yellow" title="D1 suspect_at 已标记，待人工复核">待复核</span>';
-    // 2026-10-23：已播未入任务（rpc30>0 但 rate=0：播放真实发生但 650 进度没动，最早期的异常信号）
-    if(a&&a.rpc30!=null&&a.rpc30>0&&(a.rate||0)===0)marks+='<span class="badge b-orange" title="近30日播放次数大于 0，但 650 任务进度为 0：播放已发生未计入任务，重点盯">已播未入任务</span>';
+    var marks='';
+    if(!a)marks+='<span class="badge b-gray" title="今天这一轮没采到该号快照（接口超时或号没跑），偶尔一次不用管">今日无数据</span>';
+    if(e.added&&e.added>=DATA.date)marks+='<span class="badge b-gray" title="今天刚登记，明天才进轮转开始被听，不算漏播">次日起播</span>';
+    if(e.noListen)marks+='<span class="badge b-gray" title="号主自己关了互听：只收别人的播放，不给别人播">只收不听</span>';
+    if(!e.email)marks+='<span class="badge b-yellow" title="没填通知邮箱，号失效时通知不到人；不影响播放">未绑邮箱</span>';
+    if(susSet[String(e.uid)])marks+='<span class="badge b-yellow" title="登录已失效被判死，等下一轮确认后删号，需要号主换 CK">待复核</span>';
+    // 2026-10-24：后台没返回 650 任务（非音乐人 / 未报名 / 歌曲未过审），进度列会显示 —
+    if(a&&a.rate==null&&e.song&&!(e.added&&e.added>=DATA.date))marks+='<span class="badge b-gray" title="后台没返回 650 任务：可能不是音乐人、没报名该任务或歌曲未过审，让号主去音乐人后台确认">无650任务</span>';
+    // 2026-10-23 起：播放量有但 650 是 0% → 播放没被算成有效播放
+    if(a&&a.rpc30!=null&&a.rpc30>0&&(a.rate||0)===0)marks+='<span class="badge b-orange" title="近30日播放量大于 0，但 650 进度是 0%：播放没被算成有效播放，重点盯">播放涨·650不动</span>';
+    // 2026-10-24：今日零增长（未到 100% 但和昨天一样）——用户最常问的那一类
+    if(a&&r.p&&a.rate!=null&&r.p.rate!=null&&a.rate<100&&a.rate-r.p.rate===0)marks+='<span class="badge b-yellow" title="650 进度和昨天完全一样。650 是后台分批结算，会停一两天再突然跳，先观察 2~3 天；若近30日播放也在跌，就是30天前老播放到期退出，属自然衰减">今日零增长</span>';
     // 2026-10-23：连续不涨（>=2 天，数据断层天已跳过；抓慢慢失效的号）
-    if(r.streak&&r.streak>=2)marks+='<span class="badge b-yellow" title="连续 '+r.streak+' 天 650 任务进度没有增长（无快照的数据断层天已跳过）">'+r.streak+'天未涨</span>';
+    if(r.streak&&r.streak>=2)marks+='<span class="badge b-yellow" title="连续 '+r.streak+' 天 650 进度没动（没快照的断档天已跳过）；超过 4 天要人工查">连续'+r.streak+'天未涨</span>';
     h+='<tr><td class="num">'+(i+1)+'</td>'
       +'<td><span class="badge '+(r.pool==='hz'?'b-hz">主群':'b-dz">定制')+'</span></td>'
       +'<td>'+esc(e.name)+'</td><td class="num">'+esc(e.uid)+'</td><td class="num">'+song+'</td><td>'+durCell+'</td>'
