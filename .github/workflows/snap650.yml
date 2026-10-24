@@ -6,8 +6,12 @@ name: snap650
 # POST /api/snap（slice=am）补采；控制台读侧同号同天 rpc30 大者胜，自动覆盖凌晨数据。
 on:
   schedule:
-    # 北京 10:00（UTC 02:00）
-    - cron: '0 2 * * *'
+    # 2026-10-24：主触发已改到 Cloudflare 原生 cron（北京 10:00 准点，worker scheduled →
+    # workflow_dispatch）。GitHub 免费档的 schedule 实测整体延迟 1~5 小时（relay 计划 22:23
+    # 实际 02:25 跑），snap650 上线两天甚至 0 次自动运行。这里保留北京 12:00 一班兜底：
+    # 万一 CF 侧失效，至少还有第二次机会。两班跑同一个 workflow，重复采集由快照写入的
+    # 「同号同天 rpc30 大者胜」自动去重，不会写坏数据。
+    - cron: '0 4 * * *'
   workflow_dispatch: {}
 
 jobs:
