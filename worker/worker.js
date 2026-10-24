@@ -2885,20 +2885,35 @@ async function fetchActionsStatus() {
 // GitHub 侧 schedule 保留一份晚 2 小时的兜底。两边跑同一个 workflow，重复采集由快照写入的
 // 「同号同天 rpc30 大者胜」自然去重，不会写坏数据。
 const SNAP650_REPOS = [
-  { pool: 'hz', owner: 'xm921018', repo: 'cron-relay' },
-  { pool: 'dz', owner: 'xm921017', repo: 'dingzhi' },
+  // 两个仓库分属两个 GitHub 账号，PAT 的 admin 权限不通用（实测 xm921018 的 PAT 对 dingzhi
+  // 只有 pull 权限，dispatch 直接 403 "Must have admin rights to Repository"），故分开配钥匙：
+  // hz 用既有 GH_TOKEN（xm921018，KV 里早已存在），dz 用 GH_TOKEN_DZ（xm921017，2026-10-24 新增）。
+  { pool: 'hz', owner: 'xm921018', repo: 'cron-relay', tokenKey: 'GH_TOKEN' },
+  { pool: 'dz', owner: 'xm921017', repo: 'dingzhi', tokenKey: 'GH_TOKEN_DZ' },
 ];
 async function dispatchSnap650(onlyPool) {
   const c = await cfg();
-  if (!c.ghToken) return { ok: false, message: 'KV 里没有 GH_TOKEN，无法触发 Actions' };
   const jobs = SNAP650_REPOS.filter(r => !onlyPool || onlyPool === 'all' || r.pool === onlyPool);
   const out = [];
   for (const r of jobs) {
+    let tok = c.ghToken;
+    if (r.tokenKey !== 'GH_TOKEN') {
+      tok = cleanKV(await POOL.get(r.tokenKey).catch(() => null)) || '';
+      if (!tok) {
+        out.push({ pool: r.pool, status: 0, ok: false,
+                   message: 'KV 缺少 ' + r.tokenKey + '（该仓库属于另一个 GitHub 账号，需要单独配 PAT）' });
+        continue;
+      }
+    }
+    if (!tok) {
+      out.push({ pool: r.pool, status: 0, ok: false, message: 'KV 里没有 ' + r.tokenKey });
+      continue;
+    }
     try {
       const resp = await fetch('https://api.github.com/repos/' + r.owner + '/' + r.repo +
         '/actions/workflows/snap650.yml/dispatches', {
         method: 'POST',
-        headers: { Authorization: 'Bearer ' + c.ghToken, Accept: 'application/vnd.github+json',
+        headers: { Authorization: 'Bearer ' + tok, Accept: 'application/vnd.github+json',
                    'User-Agent': 'cron-relay-worker', 'Content-Type': 'application/json' },
         body: JSON.stringify({ ref: 'main' }),
       });
