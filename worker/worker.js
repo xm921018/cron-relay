@@ -1915,17 +1915,22 @@ async function d1SnapWrite(day, pool, clean) {
   if (!uids.length) return true;
   try {
     const now = new Date().toISOString();
-    const stmts = uids.map(uid => DB.prepare(
-      'INSERT INTO snapshots (day,pool,uid,rate,rpc30,cnt,missions,dur,at) VALUES (?,?,?,?,?,?,?,?,?) ' +
-      // 2026-10-23：dur 用 COALESCE —— 时长老早就由 run.py 在播放时写入，而 10:00 的补采任务
-      // 只关心 650 指标、手里没有时长，直接覆盖会把「时长」列清空。rate/rpc30/missions
-      // 必须原样覆盖（那正是补采的目的：用结算后的值替换凌晨的旧值）。
-      'ON CONFLICT(day,pool,uid) DO UPDATE SET rate=excluded.rate, rpc30=excluded.rpc30, ' +
-      'cnt=COALESCE(excluded.cnt, snapshots.cnt), missions=excluded.missions, ' +
-      'dur=COALESCE(excluded.dur, snapshots.dur), at=excluded.at'
-    ).bind(day, pool, String(uid), clean[uid].rate, clean[uid].rpc30, clean[uid].cnt,
-           JSON.stringify(clean[uid].mis || {}), clean[uid].dur, now));
-    await DB.batch(stmts);
+    // 2026-10-24 修复：D1 单次 batch 最多 1000 条语句，而 snap650 是 jobs=1 写全池。
+    // hz 登记上限 1200，号池涨到千级后会整批写入失败（快照一条都进不去）。
+    // 与 d1DursWrite/d1RunsWrite 统一按 100 条分批；小批量仍只跑一次循环，行为不变。
+    for (let i = 0; i < uids.length; i += 100) {
+      const stmts = uids.slice(i, i + 100).map(uid => DB.prepare(
+        'INSERT INTO snapshots (day,pool,uid,rate,rpc30,cnt,missions,dur,at) VALUES (?,?,?,?,?,?,?,?,?) ' +
+        // 2026-10-23：dur 用 COALESCE —— 时长老早就由 run.py 在播放时写入，而 10:00 的补采任务
+        // 只关心 650 指标、手里没有时长，直接覆盖会把「时长」列清空。rate/rpc30/missions
+        // 必须原样覆盖（那正是补采的目的：用结算后的值替换凌晨的旧值）。
+        'ON CONFLICT(day,pool,uid) DO UPDATE SET rate=excluded.rate, rpc30=excluded.rpc30, ' +
+        'cnt=COALESCE(excluded.cnt, snapshots.cnt), missions=excluded.missions, ' +
+        'dur=COALESCE(excluded.dur, snapshots.dur), at=excluded.at'
+      ).bind(day, pool, String(uid), clean[uid].rate, clean[uid].rpc30, clean[uid].cnt,
+             JSON.stringify(clean[uid].mis || {}), clean[uid].dur, now));
+      await DB.batch(stmts);
+    }
     return true;
   } catch (e) { console.error('D1 快照写入失败:', e && e.message); return false; }
 }
