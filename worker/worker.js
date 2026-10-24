@@ -3283,6 +3283,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <br><b>二、标记对照：</b>
     <table><thead><tr><th>标记</th><th>意思</th><th>要不要管</th></tr></thead><tbody>
     <tr><td><span class="badge b-gray">今日无数据</span></td><td>今天这一轮没采到该号的快照（接口超时或号没跑）</td><td>偶尔出现不用管，连续几天要查</td></tr>
+    <tr><td><span class="badge b-gray">公益听众</span></td><td>只用来听别人的歌的号，自己没有登记歌曲</td><td>正常，所以它没有 650 进度</td></tr>
     <tr><td><span class="badge b-gray">次日起播</span></td><td>今天刚登记，明天才进轮转开始被听</td><td>正常，不用管</td></tr>
     <tr><td><span class="badge b-gray">只收不听</span></td><td>号主自己关了互听，只接收别人的播放，不给别人播</td><td>号主的选择，不用管</td></tr>
     <tr><td><span class="badge b-yellow">未绑邮箱</span></td><td>没填通知邮箱，号失效时通知不到人</td><td>能补就补，不影响播放</td></tr>
@@ -3408,6 +3409,8 @@ function render(){
   if(s==='delta')rows.sort(function(x,y){return (y.delta==null?-999:y.delta)-(x.delta==null?-999:x.delta);});
   else if(s==='rate')rows.sort(function(x,y){return ((y.a&&y.a.rate)||-1)-((x.a&&x.a.rate)||-1);});
   var withData=rows.filter(function(r){return r.a;});
+  // 2026-10-24：公益听众号没有 uid 也没有歌，快照键永远对不上，不计入「今日无快照」，避免每天虚报
+  var noSnap=rows.filter(function(r){return !r.a&&r.e.song;}).length;
   var ups=rows.filter(function(r){return r.delta!=null&&r.delta>0;}).length;
   var downs=rows.filter(function(r){return r.delta!=null&&r.delta<0;}).length;
   var avg=withData.length?Math.round(withData.reduce(function(s,r){return s+(r.a.rate||0);},0)/withData.length):0;
@@ -3423,7 +3426,7 @@ function render(){
    +'<div class="stat"><b style="color:#c0392b">'+ups+'</b><span>今日上涨</span></div>'
    +'<div class="stat"><b style="color:#1e8449">'+downs+'</b><span>今日下跌</span></div>'
    +'<div class="stat'+(zeroGrow?' warn':'')+'"><b>'+zeroGrow+'</b><span>今日零增长</span></div>'
-   +'<div class="stat'+(rows.length-withData.length?' warn':'')+'"><b>'+(rows.length-withData.length)+'</b><span>今日无快照</span></div>'
+   +'<div class="stat'+(noSnap?' warn':'')+'"><b>'+noSnap+'</b><span>今日无快照</span></div>'
    +'<div class="stat"><b>'+done100+'</b><span>已达100%</span></div>'
    +'<div class="stat'+(pendingIn?' warn':'')+'"><b>'+pendingIn+'</b><span>次日才入池</span></div>'
    +'<div class="stat'+(played0?' warn':'')+'"><b>'+played0+'</b><span>播放涨·650不动</span></div>';
@@ -3441,7 +3444,9 @@ function render(){
         :(dur>336?'<span class="badge b-yellow" title="长歌（超过 5:36）：单次播放耗时长，会拖慢单班进度">'+mm+':'+ss+'</span>'
         :'<span class="num">'+mm+':'+ss+'</span>');}
     var marks='';
-    if(!a)marks+='<span class="badge b-gray" title="今天这一轮没采到该号快照（接口超时或号没跑），偶尔一次不用管">今日无数据</span>';
+    if(!e.song)marks+='<span class="badge b-gray" title="公益听众号：只用来听别人的歌，自己没有登记歌曲，所以没有 650 进度，属正常">公益听众</span>';
+    // 2026-10-24：公益号在快照里的键是 name:xxx 且名字被截断，永远匹配不上，不该再误报「今日无数据」
+    if(!a&&e.song)marks+='<span class="badge b-gray" title="今天这一轮没采到该号快照（接口超时或号没跑），偶尔一次不用管">今日无数据</span>';
     if(e.added&&e.added>=DATA.date)marks+='<span class="badge b-gray" title="今天刚登记，明天才进轮转开始被听，不算漏播">次日起播</span>';
     if(e.noListen)marks+='<span class="badge b-gray" title="号主自己关了互听：只收别人的播放，不给别人播">只收不听</span>';
     if(!e.email)marks+='<span class="badge b-yellow" title="没填通知邮箱，号失效时通知不到人；不影响播放">未绑邮箱</span>';
