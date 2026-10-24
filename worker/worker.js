@@ -2168,6 +2168,15 @@ async function handle(request) {
     if (url.pathname === '/admin' && request.method === 'GET') {
       return new Response(ADMIN_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
     }
+    // ---- 手动触发 snap650 补采（2026-10-24）：口令同 ASSIGN_PASS，只接受 POST ----
+    // 日常由 CF 原生 cron 走 scheduled 自动触发；这个入口只用于人工补跑和排障（查 cron 有没有生效）。
+    if (url.pathname === '/api/cron_snap') {
+      const c0 = await cfg();
+      if (!c0.assignPass) return json({ message: '尚未配置 ASSIGN_PASS，该接口不开放' }, 503);
+      if (request.method !== 'POST') return json({ message: '请用 POST' }, 405);
+      if ((url.searchParams.get('pass') || '') !== c0.assignPass) return json({ message: '口令错误' }, 403);
+      return json(await dispatchSnap650(url.searchParams.get('pool') || 'all'));
+    }
     // 本地后台网页（号池管理网页.html）跨域调用本接口：放开 CORS 并处理预检
     if (url.pathname === '/api/pool' && request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: {
@@ -2867,6 +2876,45 @@ async function fetchActionsStatus() {
   }));
   try { await POOL.put('actions:cache', JSON.stringify(out), { expirationTtl: 300 }); } catch (e) { /* 缓存写失败不致命 */ }
   return out;
+}
+// ---- 2026-10-24：Cloudflare Cron 定时触发 snap650（GitHub schedule 靠不住）----
+// 背景：snap650 用 GitHub 的 schedule（北京 10:00）上线两天 0 次自动运行；同期 relay 计划 22:23
+// 实际 02:25 才跑、coverage 计划 20:00 实际 00:43 才跑 —— GitHub 免费档的 schedule 在高负载时
+// 会整体推迟数小时甚至丢弃。650 是「日环比」型数据，晚几小时整天判断都失真，必须准点。
+// 方案：CF 原生 cron（几乎准点，见 CF 侧 schedules 配置）→ GitHub workflow_dispatch 触发 snap650；
+// GitHub 侧 schedule 保留一份晚 2 小时的兜底。两边跑同一个 workflow，重复采集由快照写入的
+// 「同号同天 rpc30 大者胜」自然去重，不会写坏数据。
+const SNAP650_REPOS = [
+  { pool: 'hz', owner: 'xm921018', repo: 'cron-relay' },
+  { pool: 'dz', owner: 'xm921017', repo: 'dingzhi' },
+];
+async function dispatchSnap650(onlyPool) {
+  const c = await cfg();
+  if (!c.ghToken) return { ok: false, message: 'KV 里没有 GH_TOKEN，无法触发 Actions' };
+  const jobs = SNAP650_REPOS.filter(r => !onlyPool || onlyPool === 'all' || r.pool === onlyPool);
+  const out = [];
+  for (const r of jobs) {
+    try {
+      const resp = await fetch('https://api.github.com/repos/' + r.owner + '/' + r.repo +
+        '/actions/workflows/snap650.yml/dispatches', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + c.ghToken, Accept: 'application/vnd.github+json',
+                   'User-Agent': 'cron-relay-worker', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref: 'main' }),
+      });
+      // workflow_dispatch 成功返回 204 且 body 为空
+      out.push({ pool: r.pool, status: resp.status, ok: resp.status === 204,
+                 message: resp.ok ? '' : (await resp.text()).slice(0, 120) });
+    } catch (e) {
+      out.push({ pool: r.pool, status: 0, ok: false, message: String((e && e.message) || e).slice(0, 120) });
+    }
+  }
+  // 只留最后一次触发记录（1 周过期），控制台/排障时可直接查它到底有没有被调起来
+  try {
+    await POOL.put('cron:snap650:last', JSON.stringify({ at: new Date().toISOString(), out }),
+                   { expirationTtl: 604800 });
+  } catch (e) { /* 记录失败不影响触发本身 */ }
+  return { ok: out.every(x => x.ok), jobs: out };
 }
 // ---- 读一天的快照：聚合 snap:<date>:<pool>:<分片> 所有键 → { hz: {uid: acc}, dz: {uid: acc} } ----
 async function readSnapDay(date) {
@@ -3601,5 +3649,15 @@ export default {
       return new Response(JSON.stringify({ message: '服务器内部错误：' + ((e && e.message) || e) }),
         { status: 500, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
     }
+  },
+  // 2026-10-24：CF 原生 cron 入口。只做一件事 —— 准点把 snap650 的 workflow_dispatch 叫起来。
+  // 之所以不用 GitHub 的 schedule：本账号实测 schedule 会整体推迟 1~5 小时（relay 22:23→02:25），
+  // snap650 上线两天甚至 0 次自动运行，导致控制台白天读到的仍是凌晨结算前的旧值。
+  async scheduled(event, env, ctx) {
+    globalThis.POOL = env.POOL;
+    globalThis.GH_OWNER = env.GH_OWNER;
+    globalThis.GH_REPO = env.GH_REPO;
+    if (env.DB) globalThis.DB = env.DB;
+    ctx.waitUntil(dispatchSnap650('all').catch(() => {}));
   }
 };
