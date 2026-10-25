@@ -3349,7 +3349,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <button class="mini gray" id="btnOut">退出</button>
   </div>
   <div class="twrap"><table><thead><tr>
-    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记，按 已发x/4 显示：30天内发布图文笔记天数≥4，4/4=已完成）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
+    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记，按 已发x/4 显示：30天内发布图文笔记天数≥4，4/4=已完成）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
   <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary><div id="deadList"></div></details>
   <details class="deadbox" id="legendBox"><summary><b>标记看不懂 / 数字怎么读？点开这份对照表</b></summary><div class="lgd">
@@ -3363,7 +3363,9 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <tr><td><span class="badge b-yellow">未绑邮箱</span></td><td>没填通知邮箱，号失效时通知不到人</td><td>能补就补，不影响播放</td></tr>
     <tr><td><span class="badge b-yellow">待复核</span></td><td>登录已失效被系统判死，等下一轮再确认就删号</td><td>要管：让号主换 CK</td></tr>
     <tr><td><span class="badge b-gray">无650任务</span></td><td>后台没返回 650 任务（不是音乐人 / 没报名该任务 / 歌曲未通过审核）</td><td>要管：让号主去音乐人后台确认</td></tr>
-    <tr><td><span class="badge b-orange">播放涨·650不动</span></td><td>近30日播放量有，但 650 进度是 0%：播放没被算成「有效播放」</td><td>要管：重点盯，见下面第三节</td></tr>
+    <tr><td><span class="badge b-orange">有播放·650为0</span></td><td>近30日播放量有，但 650 进度是 0%：播放没被算成「有效播放」</td><td>要管：见下面第三节，多半是任务周期</td></tr>
+    <tr><td><span class="badge b-orange">0%卡住·查周期</span></td><td>连续 2 天以上 0% 且播放量还在涨。实测这类号 <b>11/14 是 650 任务周期已结束没续期</b>（工作台 <code>furtherVipGetTime</code> 已过期，任务不再统计播放）</td><td>要管：让号主去网易音乐人后台「领取上期奖励 / 开启新一期」</td></tr>
+    <tr><td><span class="badge b-gray">周期归零</span>（较昨日列）</td><td>昨日 650 已接近满（≥80%）、今天突然 0%，但近30日播放量没塌 —— 这是 <b>650 换新周期</b>，进度从头计，不是掉量</td><td>不用管：已不计入「今日下跌」</td></tr>
     <tr><td><span class="badge b-yellow">今日零增长</span></td><td>650 进度和昨天完全一样（还没到 100%）</td><td>先观察 2~3 天，不是每天都一定涨</td></tr>
     <tr><td><span class="badge b-yellow">N天未涨</span></td><td>连续 N 天 650 进度一点没动（没有快照的断档天不计；已到 100% 的号不标，完成了不会再涨）</td><td>连续 4 天以上要看</td></tr>
     <tr><td><span class="badge b-red">只收</span>/<span class="badge b-yellow">长歌</span>（时长列）</td><td>时长 <b>2:12 以下</b>标红、<b>5:36 以上</b>标黄</td><td>只是提示，10-22 修完后长短歌都能正常计入</td></tr>
@@ -3371,10 +3373,11 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <b>三、为什么没到 100% 却一天都没涨？</b>不是每天都该涨，三个原因按概率从高到低：
     <br>① <b>650 是后台分批结算的，不是实时加</b>：实测中位号一晚能跳 +30~40%，然后停一两天再突然跳一大截，所以「今天 0」很常见；
     <br>② <b>近 30 天滚动，会回吐</b>：30 天前的老播放到期退出，当天新增的有效播放少于退出的，进度就原地甚至下降（绿色负数就是这个）；
-    <br>③ <b>播放 ≠ 有效播放</b>：网易按账号/IP/完整播放去重，同一个出口刷的量会被合并或丢掉。「有播放·650为0」就是这一类的信号。
+    <br>③ <b>播放 ≠ 有效播放</b>：网易按账号/IP/完整播放去重，同一个出口刷的量会被合并或丢掉。「有播放·650为0」就是这一类的信号；
+    <br>④ <b>但连着 2 天以上 0% 且播放量还在涨，先查任务周期</b>：650 任务是 <b>31 天一个周期</b>，周期一结束就不再统计播放，之后刷多少都是 0。实测 10-25 当天 14 个「0% 且有播放」的号里，<b>11 个的周期结束时间已经过去</b>（最早结束 79 天前），只有 2 个还在周期内。这种只能由号主本人去网易音乐人后台「领取上期奖励 / 开启新一期」，开启后会从 0 重新爬，我们这边刷再多也没用。页面标「0%卡住·查周期」的就是这一类。
     <br><b>所以判断号有没有问题，看「今日零增长」连续几天 + 「近30日播放量」在涨还是在跌</b>：播放量也在跌 = 自然衰减（30天老量退出），播放量在涨但 650 一直不动 = 播放被判无效，才需要人工查。
   </div></details>
-  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：<b>650进度</b>=音乐人后台 650 任务完成度（近30日滚动，会回吐，100%=达标）；<b>近30日播放量</b>=工作台播放次数（≠有效播放，≠650进度）；<b>较昨日</b>=今天快照-昨天快照，前一日无快照显示 —（数据断层，非故障）；<b>其他任务</b>=与 650 无关的同组小任务（如发布笔记，按「已发x/4」显示：30 天内发布图文笔记天数≥4，4/4 即完成），显示 — 表示只有 650 一个任务；<b>时长</b>=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，仅提示，10-22 修完后都能正常计入）；<b>今日进度下的小字</b>=该行快照采集时间（北京时间；凌晨轮次边跑边采，不代表当天最终值，10:00 补采后的数才准）；各标记含义见上方「标记看不懂」对照表。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
+  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：<b>650进度</b>=音乐人后台 650 任务完成度（近30日滚动，会回吐，100%=达标）；<b>近30日播放量</b>=工作台播放次数（≠有效播放，≠650进度）；<b>较昨日</b>=今天快照-昨天快照，前一日无快照显示 —（数据断层，非故障）；昨日≥80% 今日 0% 且播放量没塌的显示为灰色「周期归零」= 650 换新周期不是掉量（已从「今日下跌」剔除）；<b>其他任务</b>=与 650 无关的同组小任务（如发布笔记，按「已发x/4」显示：30 天内发布图文笔记天数≥4，4/4 即完成），显示 — 表示只有 650 一个任务；<b>时长</b>=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，仅提示，10-22 修完后都能正常计入）；<b>今日进度下的小字</b>=该行快照采集时间（北京时间；凌晨轮次边跑边采，不代表当天最终值，10:00 补采后的数才准）；各标记含义见上方「标记看不懂」对照表。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
 </div>
 <div class="modal" id="modal" hidden><div class="mbox">
   <h3 id="mTitle">编辑账号</h3><p style="font-size:12px;color:#888;margin:4px 0 0" id="mSub"></p>
@@ -3470,8 +3473,11 @@ function buildRows(){
     pd[1].forEach(function(e){
       var a=accsOf(DATA.date,pool)[e.uid]||null,p=accsOf(DATA.prevDate,pool)[e.uid]||null;
       var delta=(a&&p&&a.rate!=null&&p.rate!=null)?(a.rate-p.rate):null;
+      // 2026-10-25：周期归零判定 —— 昨日已接近满(≥80%)、今天突然 0%，但近30日播放量没塌(仍有昨日90%以上)。
+      // 这是 650 任务换新周期（进度重新从 0 起算），不是掉量，不该算进「今日下跌」、也不该显示成 -100。
+      var reset=!!(a&&p&&a.rate===0&&p.rate!=null&&p.rate>=80&&(a.rpc30||0)>=(p.rpc30||0)*0.9);
       var st=(DATA.streak&&DATA.streak[pool]&&DATA.streak[pool][String(e.uid)])||0;
-      rows.push({pool:pool,e:e,a:a,p:p,delta:delta,streak:st});
+      rows.push({pool:pool,e:e,a:a,p:p,delta:delta,streak:st,reset:reset});
     });
   });
   return rows;
@@ -3494,7 +3500,9 @@ function render(){
   // 2026-10-24：公益听众号没有 uid 也没有歌，快照键永远对不上，不计入「今日无快照」，避免每天虚报
   var noSnap=rows.filter(function(r){return !r.a&&r.e.song;}).length;
   var ups=rows.filter(function(r){return r.delta!=null&&r.delta>0;}).length;
-  var downs=rows.filter(function(r){return r.delta!=null&&r.delta<0;}).length;
+  // 2026-10-25：周期归零的号（周期切换导致 100→0）不算「今日下跌」，单独计数
+  var resets=rows.filter(function(r){return r.reset;}).length;
+  var downs=rows.filter(function(r){return r.delta!=null&&r.delta<0&&!r.reset;}).length;
   var avg=withData.length?Math.round(withData.reduce(function(s,r){return s+(r.a.rate||0);},0)/withData.length):0;
   var done100=rows.filter(function(r){return r.a&&(r.a.rate||0)>=100;}).length;
   var pendingIn=rows.filter(function(r){return r.e.added&&r.e.added>=DATA.date;}).length;
@@ -3507,6 +3515,7 @@ function render(){
    +'<div class="stat"><b>'+avg+'%</b><span>平均650进度</span></div>'
    +'<div class="stat"><b style="color:#c0392b">'+ups+'</b><span>今日上涨</span></div>'
    +'<div class="stat"><b style="color:#1e8449">'+downs+'</b><span>今日下跌</span></div>'
+   +'<div class="stat"><b style="color:#888">'+resets+'</b><span>周期归零</span></div>'
    +'<div class="stat'+(zeroGrow?' warn':'')+'"><b>'+zeroGrow+'</b><span>今日零增长</span></div>'
    +'<div class="stat'+(noSnap?' warn':'')+'"><b>'+noSnap+'</b><span>今日无快照</span></div>'
    +'<div class="stat"><b>'+done100+'</b><span>已达100%</span></div>'
@@ -3516,7 +3525,7 @@ function render(){
   rows.forEach(function(r,i){
     var e=r.e,a=r.a;
     var rateNow=a&&a.rate!=null?a.rate:'—',ratePrev=r.p&&r.p.rate!=null?r.p.rate:'—';
-    var dCell=r.delta==null?'<span class="flat">—</span>':(r.delta>0?'<span class="up">+'+r.delta+'</span>':(r.delta<0?'<span class="down">'+r.delta+'</span>':'<span class="flat">0</span>'));
+    var dCell=r.delta==null?'<span class="flat">—</span>':(r.reset?'<span class="badge b-gray" title="650 任务按 31 天一个周期结算：上一周期已结束、新周期从头计，所以今天变 0% 不是掉量（近30日播放量并没有塌）。不计入「今日下跌」，通常几天内会重新爬回">周期归零</span>':(r.delta>0?'<span class="up">+'+r.delta+'</span>':(r.delta<0?'<span class="down">'+r.delta+'</span>':'<span class="flat">0</span>')));
     var misCell=otherMis(a);
     var song=e.song?'<a class="song" target="_blank" href="https://music.163.com/song?id='+e.song+'">'+e.song+'</a>':'<span style="color:#bbb">公益</span>';
     var dur=(DATA.durs||{})[r.pool+'|'+e.uid]||(DATA.durs||{})[e.uid]||((a&&a.dur)||0);
@@ -3536,7 +3545,12 @@ function render(){
     // 2026-10-24：后台没返回 650 任务（非音乐人 / 未报名 / 歌曲未过审），进度列会显示 —
     if(a&&a.rate==null&&e.song&&!(e.added&&e.added>=DATA.date))marks+='<span class="badge b-gray" title="后台没返回 650 任务：可能不是音乐人、没报名该任务或歌曲未过审，让号主去音乐人后台确认">无650任务</span>';
     // 2026-10-23 起：播放量有但 650 是 0% → 播放没被算成有效播放
-    if(a&&a.rpc30!=null&&a.rpc30>0&&(a.rate||0)===0)marks+='<span class="badge b-orange" title="近30日播放量大于 0，但 650 进度是 0%：播放没被算成有效播放，重点盯">有播放·650为0</span>';
+    // 2026-10-25：实测这类号绝大多数是「650 任务周期已结束、没续期」（工作台 furtherVipGetTime 已过期，任务不再统计播放）。
+    // 连着 2 天以上仍 0% 的直接点名「查周期」，比笼统的「播放无效」可操作。
+    if(a&&a.rpc30!=null&&a.rpc30>0&&(a.rate||0)===0){
+      if(r.streak>=2)marks+='<span class="badge b-orange" title="已连续 '+(r.streak+1)+' 天 0%，播放量却还在涨。实测这类号绝大多数是 650 任务周期已经结束、没有续期（网易音乐人工作台的 furtherVipGetTime 已过期，任务不再统计播放）→ 让号主去网易音乐人后台领取上期奖励并开启新一期，开启后会从 0 重新爬">0%卡住·查周期</span>';
+      else marks+='<span class="badge b-orange" title="近30日播放量大于 0，但 650 进度是 0%：播放没被算成有效播放。多数是 650 任务周期已结束没续期，见下方「标记看不懂」第三节">有播放·650为0</span>';
+    }
     // 2026-10-24：今日零增长（未到 100% 但和昨天一样）——用户最常问的那一类
     if(a&&r.p&&a.rate!=null&&r.p.rate!=null&&a.rate<100&&a.rate-r.p.rate===0)marks+='<span class="badge b-yellow" title="650 进度和昨天完全一样。650 是后台分批结算，会停一两天再突然跳，先观察 2~3 天；若近30日播放也在跌，就是30天前老播放到期退出，属自然衰减">今日零增长</span>';
     // 2026-10-23：连续不涨（>=2 天，数据断层天已跳过；抓慢慢失效的号）
