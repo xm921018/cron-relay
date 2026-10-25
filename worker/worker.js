@@ -3422,10 +3422,11 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 </style></head><body>
 <div class="head"><h1 class="page-title">650 任务进阶控制台</h1><p class="page-sub">两群账号每日快照 · 数据由 Actions 播放时段顺带采集（T+1 可见）· CK 不在页面展示</p></div>
 <div class="abox" id="loginBox">
-  <h3 style="margin:0 0 10px">登录</h3>
+  <h3 style="margin:0 0 10px">输入控制台口令</h3>
+  <p style="margin:0 0 8px;color:#888;font-size:13px;line-height:1.5">账号固定 <b>xx1031</b>，只需填口令。用 CK助手点「进阶控制台」会自动填好、不用手输；想重输口令：按住 Ctrl 再点那个按钮。</p>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <input id="lu" placeholder="账号" style="flex:1;min-width:140px">
-    <input id="lp" type="password" placeholder="密码" style="flex:1;min-width:140px">
+    <input id="lu" value="xx1031" readonly title="账号固定 xx1031，不用改" style="width:92px;flex:0 0 92px;background:#f5f5f5;color:#999;text-align:center">
+    <input id="lp" type="password" placeholder="控制台口令" style="flex:1;min-width:160px">
     <button id="lbtn">进入</button>
   </div>
   <div class="msg" id="lm"></div>
@@ -3511,7 +3512,7 @@ function api(ep,body){return fetch(ep,{method:'POST',headers:{'Content-Type':'ap
 function save(t){try{sessionStorage.setItem('consToken',t);}catch(e){}}
 function load(){try{return sessionStorage.getItem('consToken');}catch(e){return null;}}
 function login(){
-  var u=$('lu').value.trim(),p=$('lp').value;
+  var u='xx1031',p=$('lp').value;   // 2026-10-25：账号固定，登录框只留口令一个输入框
   if(!u||!p){$('lm').textContent='请输入账号和密码';$('lm').className='msg err';return;}
   $('lbtn').disabled=true;
   api('/api/console/login',{user:u,pass:p}).then(function(o){
@@ -3836,28 +3837,35 @@ $('btnCsv').onclick=function(){
 };
 (function(){
   $('date').value=todayBJ();
-  var t=load();
-  if(t){TOKEN=t;$('loginBox').hidden=true;$('mainBox').hidden=false;loadData();return;}
-  // 2026-10-22：#pw= 免密进入（CK助手/书签用）。hash 不发给服务器，登录成功/失败后都立即 replaceState 抹掉，
-  // 地址栏与历史记录不留明文；直接访问 /console 不带 hash 时仍走正常账号密码登录。
-  var m=(location.hash||'').match(/pw=([^&]+)/);
-  if(m){
+  // 2026-10-25：#pw= 免密改成「可重复触发」。旧版只在脚本初次执行时读一次 hash，而 CK助手再点
+  // 「进阶控制台」时浏览器通常已经开着 /console 标签 —— 那只是同页内 hash 变化，脚本不会重跑，
+  // 免密不执行 → 刚在 EXE 输过口令，网页又弹登录框（等于要输两遍）。现在抽成函数并监听 hashchange。
+  function hashLogin(){
+    var m=(location.hash||'').match(/pw=([^&]+)/)||(location.search||'').match(/[?&]pw=([^&]+)/);
+    if(!m)return false;
     var pw=m[1];try{pw=decodeURIComponent(pw);}catch(e){}
-    var u='xx1031';
+    try{history.replaceState(null,'',location.pathname);}catch(e1){}   // 地址栏/历史不留明文口令
+    var lb=$('loginBox'),mb=$('mainBox');
+    $('lp').value=pw;
     $('lm').textContent='正在自动登录…';$('lm').className='msg';
-    api('/api/console/login',{user:u,pass:pw}).then(function(o){
-      history.replaceState(null,'',location.pathname+location.search);
+    api('/api/console/login',{user:'xx1031',pass:pw}).then(function(o){
       if(o.ok&&o.d.ok){
-        TOKEN=JSON.stringify({user:u,pass:pw});save(TOKEN);
-        $('loginBox').hidden=true;$('mainBox').hidden=false;loadData();
+        TOKEN=JSON.stringify({user:'xx1031',pass:pw});save(TOKEN);
+        lb.hidden=true;mb.hidden=false;loadData();
       }else{
-        $('lm').textContent=(o.d&&o.d.message)||'免密登录失败，请手动输入账号密码';$('lm').className='msg err';
+        lb.hidden=false;mb.hidden=true;
+        $('lm').textContent=(o.d&&o.d.message)||'免密登录失败，请重新输入控制台口令';$('lm').className='msg err';
       }
     }).catch(function(){
-      history.replaceState(null,'',location.pathname+location.search);
+      lb.hidden=false;mb.hidden=true;
       $('lm').textContent='网络错误，请手动登录';$('lm').className='msg err';
     });
+    return true;
   }
+  window.addEventListener('hashchange',function(){hashLogin();});
+  if(hashLogin())return;                    // 带 #pw= 时优先免密，不看缓存
+  var t=load();
+  if(t){TOKEN=t;$('loginBox').hidden=true;$('mainBox').hidden=false;loadData();}
 })();
 </script></body></html>`;
 
