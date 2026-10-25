@@ -2083,9 +2083,13 @@ function hashStr(s) {
 // 口令存在 KV 的 PAGE_PASS 键：值为空 = 不启用（改回空字符串即可随时关掉，不用改代码）。
 // cookie 里存的是 hashStr('pg:'+口令)，不落明文。
 const GATE_COOKIE = 'pgate';
-// 2026-10-25：口令闸门从「只拦首页」扩到「所有网页」——/admin、/console 以前能直接打开。
-// 仍然是白名单式：只列网页路由，/api/* 一律放行，APK/EXE 不受影响。
-const PAGE_ROUTES = new Set(['/', '/index.html', '/admin', '/console']);
+// 2026-10-25：口令闸门仍是白名单式，只列要拦的网页路由，/api/* 一律放行（APK/EXE 不受影响）。
+// ⚠️ **不要**把 /console、/admin 加进来：
+//   ① 这两页各有自己的强口令（/console 认 KV CONSOLE_PASS 24 位、/admin 认 ADMIN_PASS 16 位），
+//      而 PAGE_PASS 是 music88888、发给过全体 263 个成员 —— 用它当第二道锁等于没锁；
+//   ② 闸门会 302 跳转，URL 里的 #pw= 免密 hash 在跳转时必丢，CK助手点「进阶控制台」
+//      就变成「先输访问口令、再输控制台口令」两遍（2026-10-25 实测复现）。
+const PAGE_ROUTES = new Set(['/', '/index.html']);
 function gateCookieValue(pass) { return String(hashStr('pg:' + pass)); }
 async function pageGate(request, url) {
   let pass = '';
