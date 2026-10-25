@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""D1 号池恢复（配合 d1_backup.py / d1-backup.yml 使用）。
+"""D1 账号池恢复（配合 d1_backup.py / d1-backup.yml 使用）。
 
 用途：D1 被误删、写坏、或换账号重建时，把某一天的加密备份灌回去。
 

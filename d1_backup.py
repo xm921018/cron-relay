@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""D1 号池自动备份（2026-10-22 新增）。
+"""D1 账号池自动备份（2026-10-22 新增）。
 
-背景：2026-10-22 起号池的权威数据（accounts / snapshots / kv_misc）只在 Cloudflare D1 里，
+背景：2026-10-22 起账号池的权威数据（accounts / snapshots / kv_misc）只在 Cloudflare D1 里，
 KV 只是双写备份，GitHub Secrets 分片已降级为只读回退。D1 是单点，必须有独立备份。
 
 做三件事：
@@ -36,7 +36,7 @@ TOK = (os.environ.get("CF_TOKEN", "") or "").strip()
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36"
 OUT_DIR = os.environ.get("BACKUP_DIR", "backup").strip() or "backup"
 
-# 号池全字段（含 ck，恢复时必需）
+# 账号池全字段（含 ck，恢复时必需）
 COLS = ["pool", "uid", "name", "song", "ck", "added", "exp", "no_listen",
         "email", "updated_at", "note"]
 PAGE = 200          # 单次查询行数，避免 D1 HTTP 响应过大被截断

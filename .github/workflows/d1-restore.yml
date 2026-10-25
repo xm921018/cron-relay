@@ -1,6 +1,6 @@
 name: d1-restore
 
-# D1 号池手动恢复（危险操作，只手动触发，默认 dry-run）
+# D1 账号池手动恢复（危险操作，只手动触发，默认 dry-run）
 # 用法：Actions → d1-restore → Run workflow
 #   file:  备份文件名，例如 d1-2026-10-26.json.gz.enc（在仓库 backup/ 目录里）
 #   write: 输入 yes 才真正写入 D1；留空只做预演（打印将写入多少条）
