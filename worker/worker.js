@@ -3274,7 +3274,8 @@ try{
 const CONSOLE_HTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>650任务进阶控制台</title><style>
 body{font-family:-apple-system,system-ui,"PingFang SC",sans-serif;background:#f5f6f8;margin:0;padding:20px 12px}
 .head{text-align:center;margin-bottom:10px}.page-title{font-size:19px;font-weight:600;color:#3b6d11;margin:0}.page-sub{font-size:12px;color:#888;margin:5px 0 0}
-.abox{background:#fff;padding:20px;border-radius:14px;box-shadow:0 2px 12px rgba(0,0,0,.08);width:100%;max-width:1280px;box-sizing:border-box;margin:0 auto 14px}
+.abox{background:#fff;padding:20px;border-radius:14px;box-shadow:0 2px 12px rgba(0,0,0,.08);width:100%;max-width:1800px;box-sizing:border-box;margin:0 auto 14px}
+#loginBox{max-width:520px}
 input,select{padding:9px 10px;border:1px solid #ddd;border-radius:8px;font-size:13px;box-sizing:border-box}
 button{padding:9px 14px;border:0;border-radius:8px;background:#3b6d11;color:#fff;font-size:13px;cursor:pointer}
 button.gray{background:#888}button.warn{background:#a32d2d}button:disabled{opacity:.55;cursor:default}
@@ -3348,7 +3349,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <button class="mini gray" id="btnOut">退出</button>
   </div>
   <div class="twrap"><table><thead><tr>
-    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
+    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记，按 已发x/4 显示：30天内发布图文笔记天数≥4，4/4=已完成）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
   <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary><div id="deadList"></div></details>
   <details class="deadbox" id="legendBox"><summary><b>标记看不懂 / 数字怎么读？点开这份对照表</b></summary><div class="lgd">
@@ -3370,10 +3371,10 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <b>三、为什么没到 100% 却一天都没涨？</b>不是每天都该涨，三个原因按概率从高到低：
     <br>① <b>650 是后台分批结算的，不是实时加</b>：实测中位号一晚能跳 +30~40%，然后停一两天再突然跳一大截，所以「今天 0」很常见；
     <br>② <b>近 30 天滚动，会回吐</b>：30 天前的老播放到期退出，当天新增的有效播放少于退出的，进度就原地甚至下降（绿色负数就是这个）；
-    <br>③ <b>播放 ≠ 有效播放</b>：网易按账号/IP/完整播放去重，同一个出口刷的量会被合并或丢掉。「播放涨·650不动」就是这一类的信号。
+    <br>③ <b>播放 ≠ 有效播放</b>：网易按账号/IP/完整播放去重，同一个出口刷的量会被合并或丢掉。「有播放·650为0」就是这一类的信号。
     <br><b>所以判断号有没有问题，看「今日零增长」连续几天 + 「近30日播放量」在涨还是在跌</b>：播放量也在跌 = 自然衰减（30天老量退出），播放量在涨但 650 一直不动 = 播放被判无效，才需要人工查。
   </div></details>
-  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：<b>650进度</b>=音乐人后台 650 任务完成度（近30日滚动，会回吐，100%=达标）；<b>近30日播放量</b>=工作台播放次数（≠有效播放，≠650进度）；<b>较昨日</b>=今天快照-昨天快照，前一日无快照显示 —（数据断层，非故障）；<b>其他任务</b>=与 650 无关的同组小任务（如发布笔记），显示 — 表示只有 650 一个任务；<b>时长</b>=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，仅提示，10-22 修完后都能正常计入）；<b>今日进度下的小字</b>=该行快照采集时间（北京时间；凌晨轮次边跑边采，不代表当天最终值，10:00 补采后的数才准）；各标记含义见上方「标记看不懂」对照表。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
+  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：<b>650进度</b>=音乐人后台 650 任务完成度（近30日滚动，会回吐，100%=达标）；<b>近30日播放量</b>=工作台播放次数（≠有效播放，≠650进度）；<b>较昨日</b>=今天快照-昨天快照，前一日无快照显示 —（数据断层，非故障）；<b>其他任务</b>=与 650 无关的同组小任务（如发布笔记，按「已发x/4」显示：30 天内发布图文笔记天数≥4，4/4 即完成），显示 — 表示只有 650 一个任务；<b>时长</b>=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，仅提示，10-22 修完后都能正常计入）；<b>今日进度下的小字</b>=该行快照采集时间（北京时间；凌晨轮次边跑边采，不代表当天最终值，10:00 补采后的数才准）；各标记含义见上方「标记看不懂」对照表。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
 </div>
 <div class="modal" id="modal" hidden><div class="mbox">
   <h3 id="mTitle">编辑账号</h3><p style="font-size:12px;color:#888;margin:4px 0 0" id="mSub"></p>
@@ -3442,6 +3443,13 @@ function loadData(){
 // 而且原来把「650 主任务」和「发布笔记」两个代码拼在一格还带 CSS 截断，看着像 650 只有 2%。
 var MAIN_MISSION='mission_code_recently_play_effect_count_v2';   // 650 有效播放，与「今日650进度」列同一个数
 var MIS_NAME={mission_code_musician_notebook_publish:'发布笔记'};  // 网易同组小任务，与播放无关
+// 2026-10-25：progressRate 不是统一的百分比。原始接口每个子任务都带 totalCompleteNum：
+// 650 主任务 totalCompleteNum=100 → progressRate 是 0~100 的百分比；
+// 「发布笔记」totalCompleteNum=4（即日起30天内发布图文笔记天数≥4）→ progressRate 是
+// 已发条数 0~4（全池快照实测只有 0/1/2/3/4 四个离散值）。
+// 原来一律拼个 % 上去，「已发 4 条 = 4/4 早就完成」被显示成「4%」，看着像还没开始。
+// 计数型任务在这里登记目标值，页面渲染成 x/4；没登记的目标值仍按百分比显示（保持旧行为）。
+var MIS_TOTAL={mission_code_musician_notebook_publish:4};   // 网易任务目标值（条/天，非百分比）
 function misName(k){if(MIS_NAME[k])return MIS_NAME[k];return String(k).replace(/^mission_code_/,'').replace(/_v\\d+$/,'').replace(/_/g,' ');}
 // 「其他任务」列：650 主任务已在进度列显示，这里只列其余小任务并译成中文；没有就显示 —
 function otherMis(a){
@@ -3449,7 +3457,8 @@ function otherMis(a){
   var h='';
   Object.keys(a.mis).forEach(function(k){
     if(k===MAIN_MISSION)return;
-    h+='<span class="mtag">'+esc(misName(k))+' <i>'+a.mis[k]+'%</i></span>';
+    var v=a.mis[k],t=MIS_TOTAL[k];
+    h+='<span class="mtag">'+esc(misName(k))+' <i>'+(t?v+'/'+t:v+'%')+'</i></span>';
   });
   return h||'<span class="flat">—</span>';
 }
@@ -3502,7 +3511,7 @@ function render(){
    +'<div class="stat'+(noSnap?' warn':'')+'"><b>'+noSnap+'</b><span>今日无快照</span></div>'
    +'<div class="stat"><b>'+done100+'</b><span>已达100%</span></div>'
    +'<div class="stat'+(pendingIn?' warn':'')+'"><b>'+pendingIn+'</b><span>次日才入池</span></div>'
-   +'<div class="stat'+(played0?' warn':'')+'"><b>'+played0+'</b><span>播放涨·650不动</span></div>';
+   +'<div class="stat'+(played0?' warn':'')+'"><b>'+played0+'</b><span>有播放·650为0</span></div>';
   var h='';
   rows.forEach(function(r,i){
     var e=r.e,a=r.a;
@@ -3527,7 +3536,7 @@ function render(){
     // 2026-10-24：后台没返回 650 任务（非音乐人 / 未报名 / 歌曲未过审），进度列会显示 —
     if(a&&a.rate==null&&e.song&&!(e.added&&e.added>=DATA.date))marks+='<span class="badge b-gray" title="后台没返回 650 任务：可能不是音乐人、没报名该任务或歌曲未过审，让号主去音乐人后台确认">无650任务</span>';
     // 2026-10-23 起：播放量有但 650 是 0% → 播放没被算成有效播放
-    if(a&&a.rpc30!=null&&a.rpc30>0&&(a.rate||0)===0)marks+='<span class="badge b-orange" title="近30日播放量大于 0，但 650 进度是 0%：播放没被算成有效播放，重点盯">播放涨·650不动</span>';
+    if(a&&a.rpc30!=null&&a.rpc30>0&&(a.rate||0)===0)marks+='<span class="badge b-orange" title="近30日播放量大于 0，但 650 进度是 0%：播放没被算成有效播放，重点盯">有播放·650为0</span>';
     // 2026-10-24：今日零增长（未到 100% 但和昨天一样）——用户最常问的那一类
     if(a&&r.p&&a.rate!=null&&r.p.rate!=null&&a.rate<100&&a.rate-r.p.rate===0)marks+='<span class="badge b-yellow" title="650 进度和昨天完全一样。650 是后台分批结算，会停一两天再突然跳，先观察 2~3 天；若近30日播放也在跌，就是30天前老播放到期退出，属自然衰减">今日零增长</span>';
     // 2026-10-23：连续不涨（>=2 天，数据断层天已跳过；抓慢慢失效的号）
