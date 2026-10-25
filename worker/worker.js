@@ -3442,7 +3442,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <br><b>二、标记对照（按「问题出在哪」分组，越靠上的越该先处理）：</b>
     <table><thead><tr><th>标记</th><th>意思</th><th>要怎么处理</th></tr></thead><tbody>
     <tr><td colspan="3" style="background:#fdf0f0;font-weight:600;color:#a32d2d">A · 歌曲问题 —— 必须改歌，刷多少都不会涨</td></tr>
-    <tr><td><span class="badge b-red">绑错歌</span></td><td>他登记的这首歌，作者里<b>没有他自己的音乐人身份</b>（相当于绑了别人的歌）</td><td>要改：让他换成自己名下的歌。这是「播放一直涨、650 永远 0%」最常见的根因之一</td></tr>
+    <tr><td><span class="badge b-red">绑错歌</span></td><td>他登记的这首歌，作者里<b>没有他自己的音乐人身份</b>（相当于绑了别人的歌）。两种情况都算：多人合唱里没他；<b>独唱但作者是别人</b>（10-25 补，只在近30日播放 ≥650 次、650 仍 ≤2% 时才提示，避免误伤爬坡中的新号）</td><td>要改：让他换成自己名下的歌。这是「播放一直涨、650 永远 0%」最常见的根因之一</td></tr>
     <tr><td><span class="badge b-red">查无此歌</span></td><td>网易接口查不到这首歌（已下架或已删除）</td><td>要改：换一首正常上架的歌</td></tr>
     <tr><td><span class="badge b-orange">共创·非主艺</span></td><td>这首歌是<b>多人合唱</b>，他排在第 2 位以后（主艺是别人）。实测这类号 650 恒为 0%：合唱曲里非主艺人的播放基本不计入任务</td><td>要改：优先换本人独唱的歌</td></tr>
     <tr><td><span class="badge b-orange">共创·本人主艺</span></td><td>多人合唱，他是第一艺人。比非主艺好，但播放仍会被分摊给其他艺人，不如独唱</td><td>可改可不改：能换独唱就换</td></tr>
@@ -3454,7 +3454,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <tr><td><span class="badge b-gray">公益听众</span></td><td>只用来听别人的歌的号，自己没有登记歌曲</td><td>正常，所以它没有 650 进度</td></tr>
     <tr><td colspan="3" style="background:#fdf6ec;font-weight:600;color:#b85c00">C · 任务周期（650 任务本身不统计了）</td></tr>
     <tr><td><span class="badge b-orange">0%卡住·查周期</span></td><td>连续 2 天以上 0% 且播放量还在涨。实测这类号 <b>11/14 是 650 任务周期已结束没续期</b>（工作台 <code>furtherVipGetTime</code> 已过期，任务不再统计播放）</td><td>要管：让号主去网易音乐人后台「领取上期奖励 / 开启新一期」</td></tr>
-    <tr><td><span class="badge b-orange">有播放·650为0</span></td><td>近30日播放量有，但 650 进度是 0%：播放没被算成「有效播放」（刚出现 1 天，还看不出是不是周期问题）</td><td>观察 1~2 天，变成「0%卡住」再按上面处理</td></tr>
+    <tr><td><span class="badge b-orange">有播放·650为0</span></td><td>近30日播放已有 <b>650 次以上</b>，但 650 进度是 0%：播放没被算成「有效播放」（刚开始，还看不出是不是周期问题）。入池 ≤2 天的新号不标这一类，走「新号·未开刷」</td><td>观察 1~2 天，变成「0%卡住」再按上面处理</td></tr>
     <tr><td><span class="badge b-gray">无650任务</span></td><td>后台没返回 650 任务（不是音乐人 / 没报名该任务 / 歌曲未通过审核）</td><td>要管：让号主去音乐人后台确认</td></tr>
     <tr><td><span class="badge b-gray">周期归零</span>（较昨日列）</td><td>昨日 650 已接近满（≥80%）、今天突然 0%，但近30日播放量没塌 —— 这是 <b>650 换新周期</b>，进度从头计，不是掉量</td><td>不用管：已不计入「今日下跌」</td></tr>
     <tr><td colspan="3" style="background:#fdf9e6;font-weight:600;color:#8a6d00">D · 进度停滞（还在周期内，只是没动）</td></tr>
@@ -3584,13 +3584,21 @@ function daysSince(added) {
 }
 // 歌曲归属研判 → 返回 {cls, txt, tip} 或 null
 // 判据：歌曲作者数 n；本人音乐人 id 是否在作者列表里、排第几
-function songVerdict(e) {
+function songVerdict(e, a) {
   var s = (DATA && DATA.songs) || {}, art = (DATA && DATA.artists) || {};
   var m = s[String(e.song)];
   if (!m) return null;                       // 元数据还没同步到这首 → 不打标签（不猜）
   if (m.g === 1) return { cls: 'b-red', txt: '查无此歌',
     tip: '网易接口查不到这首歌（song_id ' + e.song + '）：已下架或已删除。播放不会进 650，让号主重新登记一首名下正常上架的独唱歌曲' };
-  if ((m.n || 0) <= 1) return null;          // 独唱：正常，不打标签（页面上不堆无意义的绿标）
+  // 2026-10-25 补：独唱也可能「绑错歌」——这首歌只有 1 位作者，但那位作者不是该号的音乐人身份，
+  // 播放同样永远不算进他的 650。为免误伤正常爬坡的新号，只在「近30日播放≥650 次却仍是 0%」时才提示。
+  if ((m.n || 0) <= 1) {
+    var me1 = art[String(e.uid)], only = (m.i || [])[0] || '', soloId = me1 ? (me1[0] || '') : '';
+    if (soloId && only && only !== soloId && a && (a.rate || 0) <= 2 && (a.rpc30 || 0) >= 650)
+      return { cls: 'b-red', txt: '绑错歌',
+        tip: '这首是独唱，唯一作者「' + (m.f || '—') + '」不是该号的音乐人「' + (me1[1] || soloId) + '」→ 近30日播放 ' + a.rpc30 + ' 次、650 却只有 ' + (a.rate || 0) + '%，播放基本没算到该号头上。让号主改绑到他自己名下已上架的独唱歌曲' };
+    return null;                             // 独唱且作者对得上：正常，不打标签（页面上不堆无意义的绿标）
+  }
   var me = art[String(e.uid)];
   if (!me) return { cls: 'b-orange', txt: '共创·待核',
     tip: '这首歌是 ' + m.n + ' 人合唱（主艺：' + (m.f || '—') + '），但还没同步到该号自己的音乐人身份，暂时判断不了他排第几。可先按「共创歌曲」处理：合唱曲里非主艺人的播放通常不算进 650，建议换一首本人独唱的歌' };
@@ -3618,7 +3626,7 @@ function buildRows(){
       var reset=!!(a&&p&&a.rate===0&&p.rate!=null&&p.rate>=80&&(a.rpc30||0)>=(p.rpc30||0)*0.9);
       var st=(DATA.streak&&DATA.streak[pool]&&DATA.streak[pool][String(e.uid)])||0;
       rows.push({pool:pool,e:e,a:a,p:p,delta:delta,streak:st,reset:reset,
-                 days:daysSince(e.added),sv:songVerdict(e)});
+                 days:daysSince(e.added),sv:songVerdict(e,a)});
     });
   });
   return rows;
@@ -3637,11 +3645,14 @@ function computeMarks(r, susSet){
   if(e.noListen)add('b-gray','只收不听','号主自己关了互听：只收别人的播放，不给别人播');
   if(a&&a.rate==null&&e.song&&!(e.added&&e.added>=DATA.date))add('b-gray','无650任务','后台没返回 650 任务：可能不是音乐人、没报名该任务或歌曲未过审，让号主去音乐人后台确认');
   // C 任务周期
-  var hasCycle=false;
-  if(!hasSvc&&a&&a.rpc30!=null&&a.rpc30>0&&(a.rate||0)===0){
+  // 2026-10-25 补：入池 ≤2 天的新号即使 0% 也是正常爬坡（当天登记、次日才被听），
+  // 不能按「周期已结束」报，否则新号全被误标成售后问题 → 交给下面 E 组的「新号·未开刷」说明。
+  // 另加 rpc30>=650 门槛：播放只有个位数/几十次时 0% 只是没人听，不是「播放不计数」。
+  var hasCycle=false, isNewAcc=!(r.days==null||r.days>2);
+  if(!hasSvc&&!isNewAcc&&a&&a.rpc30!=null&&a.rpc30>=650&&(a.rate||0)===0){
     hasCycle=true;
     if(r.streak>=2)add('b-orange','0%卡住·查周期','已连续 '+(r.streak+1)+' 天 0%，播放量却还在涨。实测这类号绝大多数是 650 任务周期已经结束、没有续期（网易音乐人工作台的 furtherVipGetTime 已过期，任务不再统计播放）→ 让号主去网易音乐人后台领取上期奖励并开启新一期，开启后会从 0 重新爬');
-    else add('b-orange','有播放·650为0','近30日播放量大于 0，但 650 进度是 0%：播放没被算成有效播放。多数是 650 任务周期已结束没续期，见下方「标记看不懂」第三节');
+    else add('b-orange','有播放·650为0','近30日播放已有 650 次以上，但 650 进度是 0%：播放没被算成有效播放。多数是 650 任务周期已结束没续期，见下方「标记看不懂」第三节');
   }
   // D 进度停滞
   if(!hasSvc&&!hasCycle&&a&&r.p&&a.rate!=null&&r.p.rate!=null&&a.rate<100&&a.rate-r.p.rate===0)add('b-yellow','今日零增长','650 进度和昨天完全一样。650 是后台分批结算，会停一两天再突然跳，先观察 2~3 天；若近30日播放也在跌，就是30天前老播放到期退出，属自然衰减');
@@ -3681,13 +3692,13 @@ function render(){
   var avg=withData.length?Math.round(withData.reduce(function(s,r){return s+(r.a.rate||0);},0)/withData.length):0;
   var done100=rows.filter(function(r){return r.a&&(r.a.rate||0)>=100;}).length;
   var pendingIn=rows.filter(function(r){return r.e.added&&r.e.added>=DATA.date;}).length;
-  var played0=rows.filter(function(r){return r.a&&r.a.rpc30!=null&&r.a.rpc30>0&&(r.a.rate||0)===0;}).length;
+  var played0=rows.filter(function(r){return r.a&&r.a.rpc30!=null&&r.a.rpc30>=650&&(r.a.rate||0)===0&&!(r.days!=null&&r.days<=2);}).length;
   // 2026-10-24：今日零增长 = 未到 100% 但 650 进度与昨天一致（用户最常问的那一类，单列一张卡）
   var zeroGrow=rows.filter(function(r){return r.a&&r.p&&r.a.rate!=null&&r.p.rate!=null&&r.a.rate<100&&(r.a.rate-r.p.rate)===0;}).length;
   // 2026-10-25：售后标签计数（与下面行内标签判定保持同一口径）
   var svcWrong=0,svcCoop=0,svcWait=0;
   rows.forEach(function(r){
-    var sv=r.sv,hasSvc=!!sv,hasCycle=!hasSvc&&r.a&&r.a.rpc30!=null&&r.a.rpc30>0&&(r.a.rate||0)===0;
+    var sv=r.sv,hasSvc=!!sv,hasCycle=!hasSvc&&r.a&&r.a.rpc30!=null&&r.a.rpc30>=650&&(r.a.rate||0)===0&&!(r.days!=null&&r.days<=2);
     if(sv){ if(sv.txt==='绑错歌'||sv.txt==='查无此歌')svcWrong++; else svcCoop++; }
     if(r.e.song&&!hasSvc&&!hasCycle&&r.days!=null&&r.days>=1&&r.days<=2&&!(r.a&&(r.a.rate||0)>=12))svcWait++;
   });
