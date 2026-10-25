@@ -3365,7 +3365,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <tr><td><span class="badge b-gray">无650任务</span></td><td>后台没返回 650 任务（不是音乐人 / 没报名该任务 / 歌曲未通过审核）</td><td>要管：让号主去音乐人后台确认</td></tr>
     <tr><td><span class="badge b-orange">播放涨·650不动</span></td><td>近30日播放量有，但 650 进度是 0%：播放没被算成「有效播放」</td><td>要管：重点盯，见下面第三节</td></tr>
     <tr><td><span class="badge b-yellow">今日零增长</span></td><td>650 进度和昨天完全一样（还没到 100%）</td><td>先观察 2~3 天，不是每天都一定涨</td></tr>
-    <tr><td><span class="badge b-yellow">N天未涨</span></td><td>连续 N 天 650 进度一点没动（没有快照的断档天不计）</td><td>连续 4 天以上要看</td></tr>
+    <tr><td><span class="badge b-yellow">N天未涨</span></td><td>连续 N 天 650 进度一点没动（没有快照的断档天不计；已到 100% 的号不标，完成了不会再涨）</td><td>连续 4 天以上要看</td></tr>
     <tr><td><span class="badge b-red">只收</span>/<span class="badge b-yellow">长歌</span>（时长列）</td><td>时长 <b>2:12 以下</b>标红、<b>5:36 以上</b>标黄</td><td>只是提示，10-22 修完后长短歌都能正常计入</td></tr>
     </tbody></table>
     <b>三、为什么没到 100% 却一天都没涨？</b>不是每天都该涨，三个原因按概率从高到低：
@@ -3540,7 +3540,9 @@ function render(){
     // 2026-10-24：今日零增长（未到 100% 但和昨天一样）——用户最常问的那一类
     if(a&&r.p&&a.rate!=null&&r.p.rate!=null&&a.rate<100&&a.rate-r.p.rate===0)marks+='<span class="badge b-yellow" title="650 进度和昨天完全一样。650 是后台分批结算，会停一两天再突然跳，先观察 2~3 天；若近30日播放也在跌，就是30天前老播放到期退出，属自然衰减">今日零增长</span>';
     // 2026-10-23：连续不涨（>=2 天，数据断层天已跳过；抓慢慢失效的号）
-    if(r.streak&&r.streak>=2)marks+='<span class="badge b-yellow" title="连续 '+r.streak+' 天 650 进度没动（没快照的断档天已跳过）；超过 4 天要人工查">连续'+r.streak+'天未涨</span>';
+    // 2026-10-25：已满 100% 的号不会再涨，标「连续N天未涨」没有意义（用户反馈的冲突点），
+    // 加 rate<100 前置条件，只有未完成的号才标；100% 后又回吐掉下来的仍会标（那种反而要盯）。
+    if(a&&a.rate!=null&&a.rate<100&&r.streak&&r.streak>=2)marks+='<span class="badge b-yellow" title="连续 '+r.streak+' 天 650 进度没动（没快照的断档天已跳过）；超过 4 天要人工查">连续'+r.streak+'天未涨</span>';
     h+='<tr><td class="num">'+(i+1)+'</td>'
       +'<td><span class="badge '+(r.pool==='hz'?'b-hz">主群':'b-dz">定制')+'</span></td>'
       +'<td>'+esc(e.name)+'</td><td class="num">'+esc(e.uid)+'</td><td class="num">'+song+'</td><td>'+durCell+'</td>'
