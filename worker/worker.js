@@ -3779,7 +3779,10 @@ function computeMarks(r, susSet){
   // 「有播放·650为0」，看起来像故障，实际是换新周期。文案与「较昨日」列的灰徽章保持一致。
   if(!hasSvc&&r.reset&&e.song)add('b-gray','周期归零','昨日 650 已到 '+(r.p&&r.p.rate!=null?r.p.rate+'%':'较高')+'、今天突然 0%：650 任务 31 天周期到点，新一期从 0 重新计（不管上期做没做满，没用完的百分比直接作废）。近30日播放量没塌，属正常，不用查');
   var hasCycle=false, isNewAcc=!(r.days==null||r.days>2);
-  if(!hasSvc&&!r.reset&&!isNewAcc&&a&&a.rpc30!=null&&a.rpc30>=650&&(a.rate||0)===0){
+  // 2026-10-26：这里原来写 `(a.rate||0)===0` —— rate 为 null（后台没返回 650 任务）时
+  // null||0 === 0 也成立，于是「无650任务」的号被同时标成「有播放·650为0」，等于告诉号主
+  // 「任务周期结束了去续期」，而它压根没有任务。改成必须真有 650 进度且为 0。
+  if(!hasSvc&&!r.reset&&!isNewAcc&&a&&a.rate!=null&&a.rate===0&&a.rpc30!=null&&a.rpc30>=650){
     hasCycle=true;
     // 2026-10-26：原来这里叫「0%卡住·查周期」，和顶部字段「有播放·650为0」是两个名字，
     // 顶部那个数字是两类之和，但搜索框搜「有播放」搜不到卡住的号 —— 用户上次抱怨过
