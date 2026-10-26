@@ -1906,13 +1906,12 @@ function bjStamp(ms) {
 // 背景：控制台删号在 worker 内部完成（applyEntryEdit），全程没有任何 Python 进程参与，
 //       而 SMTP 只能从 GitHub Actions 侧发 → 之前 12 条手动删除一封邮件都没发出去。
 // 口径：不无脑发，只对「真删」发（判定逻辑见 /api/dead_pending）。
-// 没留邮箱的号不入队 —— 反正发不出去，省得队列里堆一堆 skip。
+// 没留邮箱的号也入队（判定时标 skip_noemail）—— 这样控制台每条手动删号都有明确状态，
+// 不会出现「删了但不知道通没通知」的空白行。
 async function d1QueueNotice(e) {
   if (!d1ok() || !e) return false;
-  const em = String(e.email || '').trim();
-  if (!em) return false;
   return d1Run('INSERT OR IGNORE INTO dead_notice (pool,uid,name,email,removed_at,state) VALUES (?,?,?,?,?,?)',
-    [POOL_NAME, String(e.uid != null ? e.uid : ''), String(e.name || ''), em, bjStamp(), 'pending']);
+    [POOL_NAME, String(e.uid != null ? e.uid : ''), String(e.name || ''), String(e.email || '').trim(), bjStamp(), 'pending']);
 }
 
 async function d1Run(sql, params) {
