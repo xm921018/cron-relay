@@ -2890,7 +2890,7 @@ async function handle(request) {
       //   suspectRows → accounts.suspect_at!='' 的待复核号（注意空串不是 NULL，不能写 IS NOT NULL）
       //   freshRows → 各池当天快照最后写入时间（数据新鲜度）
       //   actions   → 两仓库最近一次 run.yml 作业状态（fetchActionsStatus 内部带 KV 5 分钟缓存）
-      const [master, c2, cur, prev, dr, peerUrlRaw, plan, ranRows, deadRows, suspectRows, freshRows, actions, streakRows, songRows, accRows, noticeRows] = await Promise.all([
+      const [master, c2, cur, prev, dr, peerUrlRaw, plan, ranRows, deadRows, suspectRows, freshRows, actions, streakRows, songRows, accRows, noticeRows, deadTodayRows] = await Promise.all([
         mergePool(),
         cfg(),
         readSnapDay(date),
@@ -2900,7 +2900,7 @@ async function handle(request) {
         buildPlan(date).catch(() => null),
         d1ok() ? d1All('SELECT pool,uid FROM runs WHERE day=?', [date]).catch(() => null) : Promise.resolve(null),
         d1ok() ? d1All('SELECT pool,uid,name,reason,at FROM dead_log ORDER BY at DESC LIMIT 12').catch(() => null) : Promise.resolve(null),
-        d1ok() ? d1All("SELECT pool,uid,name,suspect_at FROM accounts WHERE suspect_at!=''").catch(() => null) : Promise.resolve(null),
+        d1ok() ? d1All("SELECT pool,uid,name,suspect_at FROM accounts WHERE suspect_at!='' ORDER BY suspect_at DESC").catch(() => null) : Promise.resolve(null),
         d1ok() ? d1All('SELECT pool,MAX(at) AS last FROM snapshots WHERE day=? GROUP BY pool', [date]).catch(() => null) : Promise.resolve(null),
         fetchActionsStatus(),
         // 2026-10-23：最近 7 天快照，用于「连续不涨天数」。date-6 起（含当天）；
@@ -2914,6 +2914,10 @@ async function handle(request) {
         // 2026-10-26：手动删号的「通知号主」判定状态（dead_notice），只用于在删号记录里
         // 标一行「已通知 / 已回池不发 / 待判」。纯只读，失败降级为 null。
         d1ok() ? d1All('SELECT pool,uid,removed_at,state,sent_at,skip_reason FROM dead_notice ORDER BY removed_at DESC LIMIT 60').catch(() => null) : Promise.resolve(null),
+        // 2026-10-26：当日删除全量（不受上面 LIMIT 12 限制），只取 uid/pool 用于
+        // 「当日删号」口径判定 —— 删完又登记回来的号不该算成删号。
+        // 用 substr 精确匹配那一天：控制台可以切到历史日期，写 at>=date 会把之后几天也算进来。
+        d1ok() ? d1All('SELECT pool,uid,reason FROM dead_log WHERE substr(at,1,10)=?', [date]).catch(() => null) : Promise.resolve(null),
       ]);
       const disp = e => ({
         name: e.name || '', uid: e.uid != null ? String(e.uid) : '',
@@ -2980,6 +2984,10 @@ async function handle(request) {
                                                 notice: noticeMap[(r.pool === 'dz' ? 'dz' : 'hz') + '|' + String(r.uid || '')] || null }));
       const suspects = (suspectRows || []).map(r => ({ pool: r.pool === 'dz' ? 'dz' : 'hz', uid: String(r.uid || ''),
                                                        name: r.name || '', since: r.suspect_at || '' }));
+      // 2026-10-26：当日删除明细（用于「当日删号」统计）。只给 uid/pool/reason，
+      // 前端拿当前号池做差集 —— 还在池里的算「已回池」（迁移/重登），不算真删。
+      const deadToday = (deadTodayRows || []).map(r => ({ pool: r.pool === 'dz' ? 'dz' : 'hz',
+                                                          uid: String(r.uid || ''), reason: r.reason || '' }));
       const fresh = {};
       for (const r of (freshRows || [])) { fresh[r.pool === 'dz' ? 'dz' : 'hz'] = r.last || ''; }
       // 2026-10-23：连续不涨天数（>=2 天才有条目；查询失败时降级为空字典，页面无标记）
@@ -3002,7 +3010,7 @@ async function handle(request) {
       // 2026-10-25：顺手在后台补几条歌曲/账号元数据（新号登记后自动补，不用再手动跑脚本）
       try { if (globalThis.CTX && typeof globalThis.CTX.waitUntil === 'function') globalThis.CTX.waitUntil(backfillMeta()); } catch (e) {}
       return json({ ok: true, date: date, prevDate: prevDate, hz: hz, dz: dz, durs: durs, snap: { cur: cur, prev: prev },
-                    coverage: cov, actions: actions || [], dead: dead, suspects: suspects, fresh: fresh,
+                    coverage: cov, actions: actions || [], dead: dead, deadToday: deadToday, suspects: suspects, fresh: fresh,
                     streak: streak, songs: songs, artists: artists }, 200, CORS);
     }
     // 控制台编辑：hz 本地执行（与管理后台同一套逻辑）；dz 转发到对端 worker 的对等接口
@@ -3564,7 +3572,8 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   <div class="twrap"><table><thead><tr>
     <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记，按 已发x/4 显示：30天内发布图文笔记天数≥4，4/4=已完成）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
-  <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary><div id="deadList"></div></details>
+  <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary>
+  <div class="muted" style="margin:6px 0 8px">原因：<b>手动删除</b>＝你在控制台/号池工具点的删除；<b>Cookie失效</b>＝播放前验活自动判死；<b>到期清理</b>＝账号有效期到了自动移除。已回池（迁移到另一群或当天重登）的号不算删号。</div><div id="deadList"></div></details>
   <details class="deadbox" id="legendBox"><summary><b>标记看不懂 / 数字怎么读？点开这份对照表</b></summary><div class="lgd">
     <b>一、先认清三个数（别再混）：</b>「650进度」= 音乐人后台的 650 任务完成度，100% 才算做完，是唯一有意义的成绩；「近30日播放量」= 工作台统计的播放次数，刷再多也不直接等于进度；「其他任务」= 网易塞在同一组里的另一个小任务（多半是「发布笔记」），跟播放和 650 一点关系都没有，一列显示「—」也是正常的。
     <br><b>二、标记对照（按「问题出在哪」分组，越靠上的越该先处理）：</b>
@@ -3918,8 +3927,17 @@ function renderRunbar(){
   var fr='';
   ['hz','dz'].forEach(function(p){if(F[p])fr+='<span class="muted">'+(p==='hz'?'主群':'定制群')+' '+bjTime(F[p])+'</span> ';});
   h+='<div class="rb"><b>快照更新至</b><br>'+(fr||'<span class="muted">当日无快照</span>')+'</div>';
-  var deadToday=D.filter(function(d){return (d.at||'').slice(0,10)===DATA.date;}).length;
-  h+='<div class="rb"><b>当日删号</b> <span class="'+(deadToday?'bad':'muted')+'">'+deadToday+'</span> · <b>待复核</b> <span class="'+(S.length?'bad':'good')+'">'+S.length+'</span></div>';
+  // 2026-10-26：「当日删号」原来直接数 dead_log 里今天有几条，但删完又登记回来的号
+  // （迁移到定制群、当天重登）也被算成删号，右上角就会一直挂着一个并不存在的「删了 1 个」。
+  // 现在拿当日删除明细和当前号池做差集：uid 还在任一池里 = 已回池，不算删号。
+  var liveUid={};
+  (DATA.hz||[]).concat(DATA.dz||[]).forEach(function(e){if(e&&e.uid)liveUid[String(e.uid)]=1;});
+  var dl=(DATA.deadToday||(function(){return D.filter(function(d){return (d.at||'').slice(0,10)===DATA.date;});})());
+  var deadReal=0, deadBack=0;
+  dl.forEach(function(x){ if(liveUid[String(x.uid)])deadBack++; else deadReal++; });
+  h+='<div class="rb"><b>当日删号</b> <span class="'+(deadReal?'bad':'muted')+'">'+deadReal+'</span>'
+    +(deadBack?' · <b>已回池</b> <span class="good">'+deadBack+'</span>':'')
+    +' · <b>待复核</b> <span class="'+(S.length?'bad':'good')+'">'+S.length+'</span></div>';
   $('runbar').innerHTML=h;
   if(D.length||S.length){
     $('deadBox').hidden=false;
@@ -3933,10 +3951,27 @@ function renderRunbar(){
       if(st.state==='claimed')return '<span class="muted">发送中</span>';
       if(st.state==='skip_returned')return '<span class="good">已回池·不发</span>';
       if(st.state==='skip_noemail')return '<span class="muted">无邮箱·不发</span>';
+      // 过了判定窗口还在 pending ＝ 已经判过、发信失败被退回重试（notify_dead 的回执），
+      // 这时候再写「待判·12h」会让人以为系统还没干活。
+      var t0=Date.parse(String(st.removed_at||'').replace(' ','T')+'Z');
+      if(!isNaN(t0)&&(Date.now()-t0)>13*3600000)return '<span class="muted">待发送·重试中</span>';
       return '<span class="muted">待判·12h</span>';
     }
-    D.forEach(function(d){dh+='<tr><td>'+(d.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(d.uid)+'</td><td>'+esc(d.name)+'</td><td>'+esc(d.reason||'')+'</td><td>'+ntTxt(d)+'</td><td class="num">'+esc((d.at||'').slice(5,16))+'</td></tr>';});
-    S.forEach(function(s){dh+='<tr><td>'+(s.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(s.uid)+'</td><td>'+esc(s.name)+'</td><td colspan="3">待复核（suspect_at '+esc((s.since||'').slice(0,16))+'）</td></tr>';});
+    // 2026-10-26：原因列原来是 D1 内部英文码（manual / cookie_invalid / expired），
+    // 对内看是「同一个词反复出现、看不出区别」，对外也看不懂。这里翻成中文并说清区别。
+    function rsTxt(r){
+      r=String(r||'');
+      if(r==='manual')return '手动删除<span class="muted">·控制台</span>';
+      if(r==='cookie_invalid')return 'Cookie失效<span class="muted">·自动判死</span>';
+      if(r==='expired')return '到期清理<span class="muted">·自动</span>';
+      if(r==='unknown'||!r)return '<span class="muted">—</span>';
+      return esc(r);
+    }
+    // 2026-10-26：10-23 那批清理脚本把 name 写成「manual:<uid>」了，D1 已就地修正，
+    // 这里再兜一层，避免老数据或别处再传脏值。
+    function nmTxt(n){ return esc(String(n||'').replace(/^manual:/,'')); }
+    D.slice(0,12).forEach(function(d){dh+='<tr><td>'+(d.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(d.uid)+'</td><td>'+nmTxt(d.name)+'</td><td>'+rsTxt(d.reason)+'</td><td>'+ntTxt(d)+'</td><td class="num">'+esc((d.at||'').slice(5,16))+'</td></tr>';});
+    S.slice(0,12).forEach(function(s){dh+='<tr><td>'+(s.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(s.uid)+'</td><td>'+esc(s.name)+'</td><td colspan="3">待复核（suspect_at '+esc((s.since||'').slice(0,16))+'）</td></tr>';});
     $('deadList').innerHTML='<table><thead><tr><th>池</th><th>UID</th><th>账号</th><th>原因</th><th>通知</th><th>时间</th></tr></thead><tbody>'+dh+'</tbody></table>';
   }
 }
@@ -3946,7 +3981,7 @@ window.openEdit=function(pool,uid,name){
   $('mSub').textContent=name+(uid?' / uid '+uid:'');
   $('modal').hidden=false;
   $('eSave').onclick=function(){doEdit(pool,{uid:uid,name:name},'update');};
-  $('eDel').onclick=function(){if(confirm('确定从'+(pool==='hz'?'主群':'定制群')+'删除账号 '+(name||uid)+'？此操作不可恢复！'))doEdit(pool,{uid:uid,name:name},'delete');};
+  $('eDel').onclick=function(){if(confirm('确定从'+(pool==='hz'?'主群':'定制群')+'删除账号 '+(name||uid)+'？删除后不能恢复。12 小时内没有重新登记回来（含迁到另一群），系统会自动给号主发一封「账号信息过期」邮件。'))doEdit(pool,{uid:uid,name:name},'delete');};
 };
 // 事件委托：表格内点「编辑」按钮（data-pool 属性路由到 openEdit），不受行重绘影响
 $('tb').addEventListener('click',function(ev){
