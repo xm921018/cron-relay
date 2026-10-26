@@ -48,10 +48,23 @@ SNAP_URL = os.environ.get("SNAP_URL", "https://xx1031.xyz").strip()
 POOL = os.environ.get("POOL_TAG", "hz").strip() or "hz"
 SLICE_TAG = "am"   # 控制台分片维度；固定 am = 上午补采
 # 每批上报多少个号（2026-10-26）：50 个号约 3~4 分钟，控制台能较早看到首屏
-SNAP_BATCH = max(1, int(os.environ.get("SNAP_BATCH", "50") or 50))
+# 2026-10-26 修复：env 填了非数字（如 "50 " 里的全角空格、写错成 "abc"）原来会直接
+# ValueError 让整个快照任务起不来。统一走 _env_int 兜底。
+def _env_int(name, default, lo=1, hi=None):
+    try:
+        v = int(str(os.environ.get(name, "") or default).strip())
+    except Exception:
+        v = default
+    v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
+
+
+SNAP_BATCH = _env_int("SNAP_BATCH", 50, 1, 500)
 # 并发线程数（2026-10-26）：4 个线程查工作台，全池约 5 分钟（串行要 19 分钟）。
 # 不建议超过 6：同一出口 IP 并发太高容易触发接口限流，收益也不大（瓶颈是单次请求耗时）。
-SNAP_WORKERS = max(1, int(os.environ.get("SNAP_WORKERS", "6") or 6))
+SNAP_WORKERS = _env_int("SNAP_WORKERS", 6, 1, 16)
 
 ASSIGN_PASS = os.environ.get("ASSIGN_PASS", "").strip() or os.environ.get("NB_PASS", "").strip()
 SNAP_PASS = os.environ.get("NB_PASS", "").strip()
