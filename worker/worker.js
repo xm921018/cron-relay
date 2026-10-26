@@ -3669,7 +3669,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   .tools input,.tools select,.tools button,.mini{padding:8px 10px;font-size:12.5px}
   .runbar{gap:6px;margin-bottom:10px}
   .rb{min-width:0;flex:1 1 100%;padding:7px 10px;font-size:11.5px}
-  .twrap{border:0;border-radius:0;max-height:none;overflow:visible;background:transparent}
+  .twrap{border:0;border-radius:0;max-height:none!important;height:auto!important;overflow:visible;background:transparent}
   .twrap table,.twrap tbody{display:block}
   .twrap thead{display:none}
   .twrap tr{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;background:#fff;
@@ -3826,8 +3826,13 @@ $('btnRefresh').onclick=loadData;
 $('date').onchange=loadData;
 $('q').oninput=render;$('sort').onchange=render;
 // 2026-10-24：表格区高度自适应视口剩余空间 → 滚动发生在 .twrap 内部，配合 .twrap th 的 sticky 实现表头冻结
+// 2026-10-26 修（手机端排版错乱）：手机宽度下表格已改成卡片流、整页滚动，这里绝不能再锁高度。
+//   原来这里无条件写 w.style.maxHeight，手机上 innerHeight 减掉页头/统计/工具条后只剩 100 多 px，
+//   被兜到 240px —— 437 张卡片全被塞进 240px 的盒子里溢出，后面的「删号记录 / 标记对照表 / 底部说明」
+//   就按 240px 的位置排版，直接压在账号卡片上（用户 10-26 截图里的错乱就是这个）。
 function fitTable(){
-  var w=document.querySelector('.twrap');if(!w||!w.offsetParent)return;
+  var w=document.querySelector('.twrap');if(!w)return;
+  if(window.innerWidth<=860||!w.offsetParent){w.style.maxHeight='';return;}
   var docTop=w.getBoundingClientRect().top+(window.pageYOffset||0);
   var h=window.innerHeight-docTop-18;
   w.style.maxHeight=(h>240?h:240)+'px';
