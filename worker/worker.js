@@ -1565,6 +1565,11 @@ async function pruneExpired() {
   } catch (e) {}
   const kept = master.filter(e => !isExpiredEntry(e));
   await d1LogDead(dead, 'expired');
+  // 2026-10-26：到期待清理同样是「静默删号」—— 而且更隐蔽：号池管理工具每打开一次列表
+  // 就会顺手清一批，号主在毫不知情的情况下发现自己歌没人听了。同样进通知队列：
+  // 12 小时内重新登记（= 续费）→ 判定回池，不发；没回来 → 发「账号信息过期，麻烦重新登记」。
+  // 量通常个位数，逐条写；失败只记日志，不影响清理主流程。
+  try { for (const e of dead) await d1QueueNotice(e); } catch (e) { console.error('通知队列写入失败:', e && e.message); }
   // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
   await pushPool(kept);
   try { await refreshPoolSnap(); } catch (e) {}   // 号池变了 → 刷新单键应急快照
