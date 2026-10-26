@@ -3654,6 +3654,68 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 .deadbox{margin:10px 0 0;font-size:12px;color:#555}
 .deadbox summary{cursor:pointer;color:#3b6d11;padding:4px 0}
 .deadbox table{margin-top:6px;border:1px solid #eee;border-radius:8px}
+/* 手机端（<=860px）把 15 列表格改成卡片流。纯 CSS、零 JS 改动 —— 判定口径与桌面端完全同一份，
+   只是换了个呈现方式；桌面端（>860px）一行都不受影响。列名靠 nth-child 硬编码，顺序同 thead：
+   1# 2池 3账号 4UID 5歌曲 6时长 7昨日650 8今日650 9较昨日 10近30日播放 11其他任务 12入池 13有效期 14标记 15操作 */
+@media (max-width:860px){
+  body{padding:10px 8px}
+  .head{margin-bottom:8px}.page-title{font-size:16px}.page-sub{font-size:11px;line-height:1.5}
+  .abox{padding:12px;border-radius:12px;margin-bottom:10px}
+  #loginBox{max-width:100%}
+  .stats{gap:6px;margin-bottom:10px}
+  .stat{flex:1 1 30%;min-width:0;padding:7px 5px;border-radius:9px}
+  .stat b{font-size:16px}.stat span{font-size:10.5px;line-height:1.25}
+  .tools{gap:6px;margin-bottom:8px}
+  .tools input,.tools select,.tools button,.mini{padding:8px 10px;font-size:12.5px}
+  .runbar{gap:6px;margin-bottom:10px}
+  .rb{min-width:0;flex:1 1 100%;padding:7px 10px;font-size:11.5px}
+  .twrap{border:0;border-radius:0;max-height:none;overflow:visible;background:transparent}
+  .twrap table,.twrap tbody{display:block}
+  .twrap thead{display:none}
+  .twrap tr{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;background:#fff;
+    border:1px solid #e8eaee;border-radius:12px;padding:9px 11px;margin:0 0 9px}
+  .twrap td{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 5px;border:0;padding:2px 0;
+    white-space:normal;flex:1 1 45%;min-width:0;font-size:12.5px;line-height:1.5}
+  .twrap td::before{color:#9aa5b1;font-size:11px;flex:0 0 auto}
+  .twrap td .snap-at{flex:0 0 100%}
+  .twrap td:nth-child(1){order:0;flex:0 0 auto;font-size:11px;color:#b3bcc6;padding-bottom:0}
+  .twrap td:nth-child(2){order:1;flex:0 0 auto}
+  .twrap td:nth-child(3){order:2;flex:1 1 auto;font-size:14px;font-weight:600;color:#222;padding-bottom:3px}
+  .twrap td:nth-child(8){order:3;flex:1 1 45%;font-size:14px}
+  .twrap td:nth-child(8)::before{content:"今日650"}
+  .twrap td:nth-child(9){order:4;flex:1 1 45%}
+  .twrap td:nth-child(9)::before{content:"较昨日"}
+  .twrap td:nth-child(14){order:5;flex:0 0 100%;padding:4px 0 2px}
+  .twrap td:nth-child(7){order:6;flex:1 1 45%}
+  .twrap td:nth-child(7)::before{content:"昨日650"}
+  .twrap td:nth-child(10){order:7;flex:1 1 45%}
+  .twrap td:nth-child(10)::before{content:"近30日播放"}
+  .twrap td:nth-child(6){order:8;flex:1 1 45%}
+  .twrap td:nth-child(6)::before{content:"时长"}
+  .twrap td:nth-child(12){order:9;flex:1 1 45%}
+  .twrap td:nth-child(12)::before{content:"入池"}
+  .twrap td:nth-child(13){order:10;flex:1 1 45%}
+  .twrap td:nth-child(13)::before{content:"有效期"}
+  .twrap td:nth-child(11){order:11;flex:0 0 100%}
+  .twrap td:nth-child(11)::before{content:"其他任务"}
+  .twrap td:nth-child(4){order:12;flex:1 1 45%}
+  .twrap td:nth-child(4)::before{content:"UID"}
+  .twrap td:nth-child(5){order:13;flex:0 0 100%}
+  .twrap td:nth-child(5)::before{content:"歌曲"}
+  .twrap td:nth-child(15){order:20;flex:0 0 100%;padding-top:6px;margin-top:4px;border-top:1px solid #f2f4f6}
+  .twrap td:nth-child(15) button{width:100%}
+  .twrap td:nth-child(1)::before,.twrap td:nth-child(2)::before,
+  .twrap td:nth-child(3)::before,.twrap td:nth-child(14)::before,
+  .twrap td:nth-child(15)::before{content:none}
+  .deadbox table,.lgd table{font-size:11.5px}
+  .deadbox table{display:table}.lgd table{display:table}
+  .deadbox thead,.lgd thead{display:table-header-group}
+  .deadbox tbody,.lgd tbody{display:table-row-group}
+  .deadbox tr,.lgd tr{display:table-row;background:none;border:0;border-radius:0;padding:0;margin:0;gap:0}
+  .deadbox td,.deadbox th,.lgd td,.lgd th{display:table-cell;flex:none;padding:5px 7px;border-bottom:1px solid #f2f2f2}
+  .deadbox td::before,.lgd td::before{content:none}
+  .lgd{font-size:11.5px}
+}
 </style></head><body>
 <div class="head"><h1 class="page-title">650 任务进阶控制台</h1><p class="page-sub">两群账号每日快照 · 数据由 Actions 播放时段顺带采集（T+1 可见）· CK 不在页面展示</p></div>
 <div class="abox" id="loginBox">
