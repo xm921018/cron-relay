@@ -3471,6 +3471,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <tr><td><span class="badge b-yellow">今日零增长</span></td><td>650 进度和昨天完全一样（还没到 100%）</td><td>先观察 2~3 天，不是每天都一定涨</td></tr>
     <tr><td><span class="badge b-yellow">N天未涨</span></td><td>连续 N 天 650 进度没涨（含小幅回落；没有快照的断档天不计；当前已到 100% 的号不标）。<b>先看「近30日播放量」</b>：在跌 = 30 天滚动窗口里老播放退出（做过满 100% 的号会一直回落到新播放补不回为止，属自然衰减）；在涨却不动 = 播放被判无效</td><td>播放量也在跌 → 不用管；播放量在涨却 4 天不动 → 人工查</td></tr>
     <tr><td colspan="3" style="background:#eef5fd;font-weight:600;color:#255ea6">E · 入池状态 —— 刚进来的号，进度低是正常的，别当故障查</td></tr>
+    <tr><td><span class="badge b-blue">今日入池</span></td><td>今天才登记的新号：明天才进轮转开始被听，所以今天既没有快照也没有 650 进度。<b>顶部「今日入池」这个数字就等于搜这个词的行数</b></td><td>正常，不用管（第 4 天还是 0% 再查）</td></tr>
     <tr><td><span class="badge b-green">已达100%</span></td><td>本周期 650 已经做满，继续刷也不会有额外收益</td><td>不用管；下个 31 天周期会自动归零重爬</td></tr>
     <tr><td colspan="3" style="background:#f7f7f7;font-weight:600;color:#555">F · 数据 / 其它</td></tr>
     <tr><td><span class="badge b-gray">采集缺失</span></td><td>今天这一轮没采到该号的快照（接口超时或号没跑）。<b>入池 ≤2 天的新号不会打这个标</b>（它们本来就没有快照，顶部「今日入池」就是它们的总数）</td><td>偶尔出现不用管，连续几天要查</td></tr>
@@ -3585,7 +3586,7 @@ function otherMis(a){
 var DAY_MS = 86400000;
 // 入池天数：登记当天算 0（次日才开始被听）
 function daysSince(added) {
-  if (!added || !/^\d{4}-\d{2}-\d{2}$/.test(String(added))) return null;
+  if (!added || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(added))) return null;
   var a = Date.parse(String(added) + 'T00:00:00Z'), t = Date.parse(String(DATA && DATA.date) + 'T00:00:00Z');
   if (isNaN(a) || isNaN(t)) return null;
   return Math.round((t - a) / DAY_MS);
@@ -3669,6 +3670,8 @@ function computeMarks(r, susSet){
   if(!hasSvc&&!hasCycle&&a&&r.p&&a.rate!=null&&r.p.rate!=null&&a.rate<100&&a.rate-r.p.rate===0)add('b-yellow','今日零增长','650 进度和昨天完全一样。650 是后台分批结算，会停一两天再突然跳，先观察 2~3 天；若近30日播放也在跌，就是30天前老播放到期退出，属自然衰减（做过满 100% 的号会一直回落到新播放补不回为止，不是故障）');
   if(!hasSvc&&!hasCycle&&!r.reset&&a&&a.rate!=null&&a.rate<100&&r.streak&&r.streak>=2)add('b-yellow','连续'+r.streak+'天未涨','连续 '+r.streak+' 天 650 进度没涨（含小幅回落，没快照的断档天已跳过）。先看「近30日播放量」：在跌=30天滚动窗口老播放退出（做过满 100% 的号常见，属自然衰减，不用管）；在涨却不动=播放被判无效，超过 4 天才需要人工查');
   // E 入池状态
+  // 2026-10-26：给当天登记的号加行内标记，这样顶部「今日入池」这个数就能被搜索框直接筛出来（顶部=行内）。
+  if(String(e.added||'')===String(DATA.date))add('b-blue','今日入池','今天（'+DATA.date+'）才登记的新号：明天才进轮转开始被听，今天没有快照、650 进度是空的都属正常，不用查');
   if(e.song&&a&&(a.rate||0)>=100)add('b-green','已达100%','本周期 650 已达 100%：已经做满，不需要再刷更多（继续刷也不会有额外收益）。等下个 31 天周期重新起算会自动归零重爬');
   // 2026-10-26：删掉「次日才入池」「新号未开刷」两个标记 —— 新号前两三天进度低本来就是正常爬坡，
   // 打完标记反而制造噪音。顶部只保留一个「今日入池」总数（days<=0 的号数），行内不再重复提示。
@@ -3709,15 +3712,15 @@ function render(){
   // 连续 N 天未涨：N 从行内「连续N天未涨」标记里取，≥3 天进这个数，≥7 天在 title 里单说。
   // 已满 100%、周期归零、歌曲有问题的号本来就不会有这个标记，所以不用再排除一次。
   var stuck3=0,stuck7=0;
-  rows.forEach(function(r){var m=/连续(\d+)天未涨/.exec(r.markText||'');if(m){var n=+m[1];if(n>=3)stuck3++;if(n>=7)stuck7++;}});
+  rows.forEach(function(r){var m=/连续([0-9]+)天未涨/.exec(r.markText||'');if(m){var n=+m[1];if(n>=3)stuck3++;if(n>=7)stuck7++;}});
   var noTask=cntTxt('无650任务');
   // 「有播放·650为0」与它的升级版「0%卡住·查周期」同属一类，合并计数
   var played0=cntTxt('有播放·650为0')+cntTxt('0%卡住');
   var svcWrong=cntTxt('歌曲无效');
   var svcCoop=cntTxt('共创歌曲');
-  // 今日入池 = added 日期就是今天的那批号（明天才进轮转开始被听）。
-  // 注意跟「采集缺失」是两件事：新号本来就没有快照，不该算缺数据。
-  var newIn=rows.filter(function(r){return r.days===0;}).length;
+  // 今日入池 = 行内有「今日入池」标记的行数（added 日期就是今天）。
+  // 直接比日期字符串，不经过 daysSince —— 那条路径依赖正则，模板字符串里踩过一次转义的坑。
+  var newIn=cntTxt('今日入池');
   var done100=cntTxt('已达100%');
   $('stats').innerHTML=
     '<div class="stat"><b>'+rows.length+'</b><span>账号总数</span></div>'
