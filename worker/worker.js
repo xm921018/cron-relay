@@ -2853,7 +2853,9 @@ async function handle(request) {
       const slice = String(body.slice == null ? 'x' : body.slice).replace(/[^\w-]/g, '').slice(0, 8) || 'x';
       const accs = (body.accs && typeof body.accs === 'object') ? body.accs : {};
       const clean = {};
-      // 2026-10-26 新增：任务「周期结束日」旁路收集（run.py workbench_info 的 periodEnd）。
+      // 2026-10-26 新增：data 层 furtherVipGetTime 旁路留档（run.py workbench_info 的 periodEnd）。
+      // ⚠️ 实测该字段【不是当前任务周期的结束日】（10-26 全池验证：按它判「已过期」的号 95% 仍在涨），
+      // 所以只存不判，控制台的「周期归零」仍用「昨日≥80%」的启发式。别拿它当到期日。
       // 为什么不塞进 clean：clean 会原样写进 D1 snapshots 表，多一个字段就撞「列不存在」。
       // 只在上午补采（slice=am）这一路收集，避免凌晨 250 个分片并发读改写同一个 KV 键。
       const perIn = {};
@@ -3053,8 +3055,9 @@ async function handle(request) {
       } else {
         try { durs = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
       }
-      // 2026-10-26 新增：任务周期结束日（键 'hz|uid' / 'dz|uid' → YYYY-MM-DD）。
-      // 只在 slice=am 补采时写入；读失败降级 null，前端自动回退到「昨日≥80%」的启发式。
+      // 2026-10-26 新增：furtherVipGetTime 留档（键 'hz|uid' / 'dz|uid' → YYYY-MM-DD）。
+      // 只在 slice=am 补采时写入；读失败降级 null。⚠️ 仅数据留档，不参与任何判定
+      //（实测它不是当前周期结束日，详见 /api/snap 处说明）。
       let periods = null;
       try { periods = JSON.parse(await POOL.get('console:period') || 'null'); } catch (e) { periods = null; }
       // ---- 2026-10-23 组装运行状态数据（纯加法：全部是新键，不影响 hz/dz/durs/snap）----
@@ -3865,17 +3868,14 @@ function buildRows(){
       var delta=(a&&p&&a.rate!=null&&p.rate!=null)?(a.rate-p.rate):null;
       // 2026-10-25：周期归零判定 —— 昨日已接近满(≥80%)、今天突然 0%，但近30日播放量没塌(仍有昨日90%以上)。
       // 这是 650 任务换新周期（进度重新从 0 起算），不是掉量，不该算进「今日下跌」、也不该显示成 -100。
-      // 2026-10-26 改进：优先用真实周期结束日（DATA.periods 的 '池|uid' 键，来自工作台 furtherVipGetTime）。
-      //   原来只认「昨日≥80%」，上期只做到 40% 就到期的号会漏判 → 显示成「今日下跌 -40」+「650为0·卡住」，
-      //   是当前最大的售后误报源。有真实到期日就直接判，没有（还没采到）才退回老启发式，保证不退化。
-      var peRaw=(DATA.periods&&DATA.periods[pool+'|'+String(e.uid)])||'';
-      var peExpired=!!(peRaw&&/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(peRaw)&&peRaw<DATA.date);
-      var reset=!!(a&&a.rate===0&&e.song&&(
-        peExpired ||
-        (p&&p.rate!=null&&p.rate>=80&&(a.rpc30||0)>=(p.rpc30||0)*0.9)
-      ));
+      // 2026-10-26 ⚠️ 实测否决：一度想改用工作台的 furtherVipGetTime（存于 DATA.periods）精确判定，
+      //   但 10-26 全池实测把它证伪了 —— 按该字段「已过期」的 131 个号里 125 个当天仍在涨（95%），
+      //   而「未过期」组只有 44% 在涨；字段里还出现 2024 年的日期。结论：它【不是当前周期结束日】，
+      //   拿它判定会把「刚开始爬的新周期号」误标成周期到点。判定继续用原来的百分比启发式。
+      //   采集链路（run.py periodEnd → console:period）保留，仅作数据留档，不参与任何判定。
+      var reset=!!(a&&p&&a.rate===0&&p.rate!=null&&p.rate>=80&&(a.rpc30||0)>=(p.rpc30||0)*0.9);
       var st=(DATA.streak&&DATA.streak[pool]&&DATA.streak[pool][String(e.uid)])||0;
-      rows.push({pool:pool,e:e,a:a,p:p,delta:delta,streak:st,reset:reset,pe:peRaw,
+      rows.push({pool:pool,e:e,a:a,p:p,delta:delta,streak:st,reset:reset,
                  days:daysSince(e.added),sv:songVerdict(e,a)});
     });
   });
@@ -3898,15 +3898,10 @@ function computeMarks(r, susSet){
   // 2026-10-25 补：入池 ≤2 天的新号即使 0% 也是正常爬坡（当天登记、次日才被听），
   // 不能按「周期已结束」报，否则新号全被误标成售后问题 → 新号前 1~2 天不打标记，只在顶部「今日入池」计数。
   // 另加 rpc30>=650 门槛：播放只有个位数/几十次时 0% 只是没人听，不是「播放不计数」。
-  // 2026-10-26：周期归零（昨日≥80% 今日 0%，或真实周期日已过）优先判定 —— 原来这种号会被下面
-  // hasCycle 标成「有播放·650为0」，看起来像故障，实际是换新周期。文案与「较昨日」列的灰徽章一致。
-  // 有真实到期日时直接报出日期，号主能一眼看到"该去后台开启新一期了"。
-  if(!hasSvc&&r.reset&&e.song){
-    var peTip=(r.pe&&r.pe<DATA.date)
-      ? '任务周期结束日 '+r.pe+' 已到期、今天进度 0%：650 任务按 31 天结算，到期后不再统计播放。新一期要从 0 重新爬，需要号主本人在音乐人后台「领取上期奖励 / 开启新一期」'
-      : '昨日 650 已到 '+(r.p&&r.p.rate!=null?r.p.rate+'%':'较高')+'、今天突然 0%：650 任务 31 天周期到点，新一期从 0 重新计（不管上期做没做满，没用完的百分比直接作废）。近30日播放量没塌，属正常，不用查';
-    add('b-gray','周期归零',peTip);
-  }
+  // 2026-10-26：周期归零（昨日≥80% 今日 0%）优先判定 —— 原来这种号会被下面 hasCycle 标成
+  // 「有播放·650为0」，看起来像故障，实际是换新周期。文案与「较昨日」列的灰徽章保持一致。
+  // 注：不动用 furtherVipGetTime（实测不是当前周期结束日，见 buildRows 处说明）。
+  if(!hasSvc&&r.reset&&e.song)add('b-gray','周期归零','昨日 650 已到 '+(r.p&&r.p.rate!=null?r.p.rate+'%':'较高')+'、今天突然 0%：650 任务 31 天周期到点，新一期从 0 重新计（不管上期做没做满，没用完的百分比直接作废）。近30日播放量没塌，属正常，不用查');
   var hasCycle=false, isNewAcc=!(r.days==null||r.days>2);
   // 2026-10-26：这里原来写「(a.rate || 0) === 0」—— rate 为 null（后台没返回 650 任务）时
   // 0 也成立，于是「无650任务」的号被同时标成「有播放·650为0」，等于告诉号主
