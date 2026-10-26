@@ -3452,11 +3452,11 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <br><b>二、标记对照（按「问题出在哪」分组，越靠上的越该先处理）：</b>
     <table><thead><tr><th>标记</th><th>意思</th><th>要怎么处理</th></tr></thead><tbody>
     <tr><td colspan="3" style="background:#fdf0f0;font-weight:600;color:#a32d2d">A · 歌曲问题 —— 必须改歌，刷多少都不会涨</td></tr>
-    <tr><td><span class="badge b-red">绑错歌</span></td><td>他登记的这首歌，作者里<b>没有他自己的音乐人身份</b>（相当于绑了别人的歌）。两种情况都算：多人合唱里没他；<b>独唱但作者是别人</b>（10-25 补，只在近30日播放 ≥650 次、650 仍 ≤2% 时才提示，避免误伤爬坡中的新号）</td><td>要改：让他换成自己名下的歌。这是「播放一直涨、650 永远 0%」最常见的根因之一</td></tr>
-    <tr><td><span class="badge b-red">查无此歌</span></td><td>网易接口查不到这首歌（已下架或已删除）</td><td>要改：换一首正常上架的歌</td></tr>
-    <tr><td><span class="badge b-orange">共创·非主艺</span></td><td>这首歌是<b>多人合唱</b>，他排在第 2 位以后（主艺是别人）。实测这类号 650 恒为 0%：合唱曲里非主艺人的播放基本不计入任务</td><td>要改：优先换本人独唱的歌</td></tr>
-    <tr><td><span class="badge b-orange">共创·本人主艺</span></td><td>多人合唱，他是第一艺人。比非主艺好，但播放仍会被分摊给其他艺人，不如独唱</td><td>可改可不改：能换独唱就换</td></tr>
-    <tr><td><span class="badge b-orange">共创·待核</span></td><td>多人合唱，但还没同步到该号的音乐人身份，判断不了他排第几</td><td>先按「共创」处理；等元数据同步后会自动变成上面两种之一</td></tr>
+    <tr><td><span class="badge b-red">歌曲无效·绑错歌</span></td><td>他登记的这首歌，作者里<b>没有他自己的音乐人身份</b>（相当于绑了别人的歌）。两种情况都算：多人合唱里没他；<b>独唱但作者是别人</b>（10-25 补，只在近30日播放 ≥650 次、650 仍 ≤2% 时才提示，避免误伤爬坡中的新号）</td><td>要改：让他换成自己名下的歌。这是「播放一直涨、650 永远 0%」最常见的根因之一</td></tr>
+    <tr><td><span class="badge b-red">歌曲无效·查无此歌</span></td><td>网易接口查不到这首歌（已下架或已删除）</td><td>要改：换一首正常上架的歌</td></tr>
+    <tr><td><span class="badge b-orange">共创歌曲·非主艺</span></td><td>这首歌是<b>多人合唱</b>，他排在第 2 位以后（主艺是别人）。实测这类号 650 恒为 0%：合唱曲里非主艺人的播放基本不计入任务</td><td>要改：优先换本人独唱的歌</td></tr>
+    <tr><td><span class="badge b-orange">共创歌曲·本人主艺</span></td><td>多人合唱，他是第一艺人。比非主艺好，但播放仍会被分摊给其他艺人，不如独唱</td><td>可改可不改：能换独唱就换</td></tr>
+    <tr><td><span class="badge b-orange">共创歌曲·待核</span></td><td>多人合唱，但还没同步到该号的音乐人身份，判断不了他排第几</td><td>先按「共创」处理；等元数据同步后会自动变成上面两种之一</td></tr>
     <tr><td colspan="3" style="background:#f7f7f7;font-weight:600;color:#555">B · 账号状态</td></tr>
     <tr><td><span class="badge b-yellow">待复核</span></td><td>登录已失效被系统判死，等下一轮再确认就删号</td><td>要管：让号主换 CK</td></tr>
     <tr><td><span class="badge b-yellow">未绑邮箱</span></td><td>没填通知邮箱，号失效时通知不到人</td><td>能补就补，不影响播放</td></tr>
@@ -3464,25 +3464,25 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <tr><td><span class="badge b-gray">公益听众</span></td><td>只用来听别人的歌的号，自己没有登记歌曲</td><td>正常，所以它没有 650 进度</td></tr>
     <tr><td colspan="3" style="background:#fdf6ec;font-weight:600;color:#b85c00">C · 任务周期（650 任务本身不统计了）</td></tr>
     <tr><td><span class="badge b-orange">0%卡住·查周期</span></td><td>连续 2 天以上 0% 且播放量还在涨。实测这类号 <b>11/14 是 650 任务周期已结束没续期</b>（工作台 <code>furtherVipGetTime</code> 已过期，任务不再统计播放）</td><td>要管：让号主去网易音乐人后台「领取上期奖励 / 开启新一期」</td></tr>
-    <tr><td><span class="badge b-orange">有播放·650为0</span></td><td>近30日播放已有 <b>650 次以上</b>，但 650 进度是 0%：播放没被算成「有效播放」（刚开始，还看不出是不是周期问题）。入池 ≤2 天的新号不标这一类，走「新号·未开刷」</td><td>观察 1~2 天，变成「0%卡住」再按上面处理</td></tr>
+    <tr><td><span class="badge b-orange">有播放·650为0</span></td><td>近30日播放已有 <b>650 次以上</b>，但 650 进度是 0%：播放没被算成「有效播放」（刚开始，还看不出是不是周期问题）。入池 ≤2 天的新号不标这一类，走「新号未开刷」</td><td>观察 1~2 天，变成「0%卡住」再按上面处理</td></tr>
     <tr><td><span class="badge b-gray">无650任务</span></td><td>后台没返回 650 任务（不是音乐人 / 没报名该任务 / 歌曲未通过审核）</td><td>要管：让号主去音乐人后台确认</td></tr>
-    <tr><td><span class="badge b-gray">周期归零</span>（较昨日列）</td><td>昨日 650 已接近满（≥80%）、今天突然 0%，但近30日播放量没塌 —— 这是 <b>650 换新周期</b>，进度从头计，不是掉量</td><td>不用管：已不计入「今日下跌」</td></tr>
+    <tr><td><span class="badge b-gray">周期归零</span>（较昨日列 + 标记列）</td><td>昨日 650 已接近满（≥80%）、今天突然 0%，但近30日播放量没塌 —— 这是 <b>650 换新周期</b>，进度从头计，不是掉量。<b>周期按 31 天日历走，不看进度</b>：上期只做到 98% 到期也一样归零重来，没用完的百分比不会带到新一期</td><td>不用管：已不计入「今日下跌」，也不再标成「有播放·650为0」</td></tr>
     <tr><td colspan="3" style="background:#fdf9e6;font-weight:600;color:#8a6d00">D · 进度停滞（还在周期内，只是没动）</td></tr>
     <tr><td><span class="badge b-yellow">今日零增长</span></td><td>650 进度和昨天完全一样（还没到 100%）</td><td>先观察 2~3 天，不是每天都一定涨</td></tr>
-    <tr><td><span class="badge b-yellow">N天未涨</span></td><td>连续 N 天 650 进度一点没动（没有快照的断档天不计；已到 100% 的号不标，完成了不会再涨）</td><td>连续 4 天以上要看</td></tr>
+    <tr><td><span class="badge b-yellow">N天未涨</span></td><td>连续 N 天 650 进度没涨（含小幅回落；没有快照的断档天不计；当前已到 100% 的号不标）。<b>先看「近30日播放量」</b>：在跌 = 30 天滚动窗口里老播放退出（做过满 100% 的号会一直回落到新播放补不回为止，属自然衰减）；在涨却不动 = 播放被判无效</td><td>播放量也在跌 → 不用管；播放量在涨却 4 天不动 → 人工查</td></tr>
     <tr><td colspan="3" style="background:#eef5fd;font-weight:600;color:#255ea6">E · 入池状态 —— 刚进来的号，进度低是正常的，别当故障查</td></tr>
-    <tr><td><span class="badge b-blue">次日开刷</span></td><td>今天（或未来日期）才登记，第二天才进轮转开始被听</td><td>正常，不用管</td></tr>
-    <tr><td><span class="badge b-blue">新号·未开刷</span></td><td>入池第 1~2 天、进度还不到 12%。按 31 人/天轮转，最快也要 21 天才满 100%，前两天低是正常的</td><td>正常，不用管；到第 4 天还是 0% 再按「0%卡住」排查</td></tr>
-    <tr><td><span class="badge b-green">已满100</span></td><td>本周期 650 已经做满，继续刷也不会有额外收益</td><td>不用管；下个 31 天周期会自动归零重爬</td></tr>
+    <tr><td><span class="badge b-blue">次日才入池</span></td><td>今天（或未来日期）才登记，第二天才进轮转开始被听（所以今天既没有快照、也不该算「今日无快照」）</td><td>正常，不用管</td></tr>
+    <tr><td><span class="badge b-blue">新号未开刷</span></td><td>入池第 1~2 天、进度还不到 12%。按 31 人/天轮转，最快也要 21 天才满 100%，前两天低是正常的</td><td>正常，不用管；到第 4 天还是 0% 再按「0%卡住」排查</td></tr>
+    <tr><td><span class="badge b-green">已达100%</span></td><td>本周期 650 已经做满，继续刷也不会有额外收益</td><td>不用管；下个 31 天周期会自动归零重爬</td></tr>
     <tr><td colspan="3" style="background:#f7f7f7;font-weight:600;color:#555">F · 数据 / 其它</td></tr>
-    <tr><td><span class="badge b-gray">今日无数据</span></td><td>今天这一轮没采到该号的快照（接口超时或号没跑）</td><td>偶尔出现不用管，连续几天要查</td></tr>
+    <tr><td><span class="badge b-gray">今日无快照</span></td><td>今天这一轮没采到该号的快照（接口超时或号没跑）。<b>入池 ≤2 天的新号不会打这个标</b>（它们本来就没有快照，走「次日才入池 / 新号未开刷」）</td><td>偶尔出现不用管，连续几天要查</td></tr>
     <tr><td><span class="badge b-red">只收</span>/<span class="badge b-yellow">长歌</span>（时长列）</td><td>时长 <b>2:12 以下</b>标红、<b>5:36 以上</b>标黄</td><td>只是提示，10-22 修完后长短歌都能正常计入</td></tr>
     </tbody></table>
     <b>三、号主来投诉「我的号不涨」时的排查顺序（照这个顺序问，一遍就能定位）：</b>
-    <br>① <b>先看 A 组（歌曲）</b>：有「绑错歌 / 查无此歌 / 共创·非主艺」→ 直接是歌的问题，让他改歌，不用再查别的；
+    <br>① <b>先看 A 组（歌曲）</b>：有「歌曲无效·绑错歌 / 歌曲无效·查无此歌 / 共创歌曲·非主艺」→ 直接是歌的问题，让他改歌，不用再查别的；
     <br>② <b>再看 B 组（账号）</b>：有「待复核」→ CK 已失效，号都要删了，先换 CK；
     <br>③ <b>再看 C 组（周期）</b>：有「0%卡住·查周期」→ 650 周期结束没续期，让他去音乐人后台开新一期（详见下面第四节）；
-    <br>④ <b>再看 E 组（入池）</b>：有「次日开刷 / 新号·未开刷」→ 正常爬坡，告诉他 21 天满、现在不用管；
+    <br>④ <b>再看 E 组（入池）</b>：有「次日才入池 / 新号未开刷」→ 正常爬坡，告诉他 21 天满、现在不用管；
     <br>⑤ <b>都没有</b> → 说明号是正常的，只是 650 后台分批结算（见下条）。
     <b>四、为什么没到 100% 却一天都没涨？</b>不是每天都该涨，按概率从高到低：
     <br>① <b>650 是后台分批结算的，不是实时加</b>：实测中位号一晚能跳 +30~40%，然后停一两天再突然跳一大截，所以「今天 0」很常见；
@@ -3491,7 +3491,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <br>④ <b>但连着 2 天以上 0% 且播放量还在涨，先查任务周期</b>：650 任务是 <b>31 天一个周期</b>，周期一结束就不再统计播放，之后刷多少都是 0。实测 10-25 当天 14 个「0% 且有播放」的号里，<b>11 个的周期结束时间已经过去</b>（最早结束 79 天前），只有 2 个还在周期内。这种只能由号主本人去网易音乐人后台「领取上期奖励 / 开启新一期」，开启后会从 0 重新爬，我们这边刷再多也没用。页面标「0%卡住·查周期」的就是这一类。
     <br><b>所以判断号有没有问题，看「今日零增长」连续几天 + 「近30日播放量」在涨还是在跌</b>：播放量也在跌 = 自然衰减（30天老量退出），播放量在涨但 650 一直不动 = 播放被判无效，才需要人工查。
   </div></details>
-  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：<b>650进度</b>=音乐人后台 650 任务完成度（近30日滚动，会回吐，100%=达标）；<b>近30日播放量</b>=工作台播放次数（≠有效播放，≠650进度）；<b>较昨日</b>=今天快照-昨天快照，前一日无快照显示 —（数据断层，非故障）；昨日≥80% 今日 0% 且播放量没塌的显示为灰色「周期归零」= 650 换新周期不是掉量（已从「今日下跌」剔除）；<b>其他任务</b>=与 650 无关的同组小任务（如发布笔记，按「已发x/4」显示：30 天内发布图文笔记天数≥4，4/4 即完成），显示 — 表示只有 650 一个任务；<b>时长</b>=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，仅提示，10-22 修完后都能正常计入）；<b>今日进度下的小字</b>=该行快照采集时间（北京时间；凌晨轮次边跑边采，不代表当天最终值，10:00 补采后的数才准）；各标记含义见上方「标记看不懂」对照表。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
+  <p style="font-size:12px;color:#888;margin:10px 0 0">数据口径：<b>650进度</b>=音乐人后台 650 任务完成度（近30日滚动，会回吐，100%=达标）；<b>近30日播放量</b>=工作台播放次数（≠有效播放，≠650进度）；<b>较昨日</b>=今天快照-昨天快照，前一日无快照显示 —（数据断层，非故障；顶部每个统计名的用词与标记列完全一致，搜索框直接搜那个词就能筛出对应行）；昨日≥80% 今日 0% 且播放量没塌的显示为灰色「周期归零」= 650 换新周期不是掉量（已从「今日下跌」剔除）；<b>其他任务</b>=与 650 无关的同组小任务（如发布笔记，按「已发x/4」显示：30 天内发布图文笔记天数≥4，4/4 即完成），显示 — 表示只有 650 一个任务；<b>时长</b>=登记歌曲长度（红=短歌&lt;2:12、黄=长歌&gt;5:36，仅提示，10-22 修完后都能正常计入）；<b>今日进度下的小字</b>=该行快照采集时间（北京时间；凌晨轮次边跑边采，不代表当天最终值，10:00 补采后的数才准）；各标记含义见上方「标记看不懂」对照表。<b>运行状态横条</b>：作业=两仓库最近一次定时轮次（GitHub API，5 分钟缓存）；应跑/实跑=按当前号池对所选日期回放的轮转计划与 runs 表核对（历史日期为近似值）；快照更新=该日快照最后写入时间（北京时间）；今日删号/待复核来自 D1。</p>
 </div>
 <div class="modal" id="modal" hidden><div class="mbox">
   <h3 id="mTitle">编辑账号</h3><p style="font-size:12px;color:#888;margin:4px 0 0" id="mSub"></p>
@@ -3598,28 +3598,28 @@ function songVerdict(e, a) {
   var s = (DATA && DATA.songs) || {}, art = (DATA && DATA.artists) || {};
   var m = s[String(e.song)];
   if (!m) return null;                       // 元数据还没同步到这首 → 不打标签（不猜）
-  if (m.g === 1) return { cls: 'b-red', txt: '查无此歌',
+  if (m.g === 1) return { cls: 'b-red', txt: '歌曲无效·查无此歌',
     tip: '网易接口查不到这首歌（song_id ' + e.song + '）：已下架或已删除。播放不会进 650，让号主重新登记一首名下正常上架的独唱歌曲' };
   // 2026-10-25 补：独唱也可能「绑错歌」——这首歌只有 1 位作者，但那位作者不是该号的音乐人身份，
   // 播放同样永远不算进他的 650。为免误伤正常爬坡的新号，只在「近30日播放≥650 次却仍是 0%」时才提示。
   if ((m.n || 0) <= 1) {
     var me1 = art[String(e.uid)], only = (m.i || [])[0] || '', soloId = me1 ? (me1[0] || '') : '';
     if (soloId && only && only !== soloId && a && (a.rate || 0) <= 2 && (a.rpc30 || 0) >= 650)
-      return { cls: 'b-red', txt: '绑错歌',
+      return { cls: 'b-red', txt: '歌曲无效·绑错歌',
         tip: '这首是独唱，唯一作者「' + (m.f || '—') + '」不是该号的音乐人「' + (me1[1] || soloId) + '」→ 近30日播放 ' + a.rpc30 + ' 次、650 却只有 ' + (a.rate || 0) + '%，播放基本没算到该号头上。让号主改绑到他自己名下已上架的独唱歌曲' };
     return null;                             // 独唱且作者对得上：正常，不打标签（页面上不堆无意义的绿标）
   }
   var me = art[String(e.uid)];
-  if (!me) return { cls: 'b-orange', txt: '共创·待核',
+  if (!me) return { cls: 'b-orange', txt: '共创歌曲·待核',
     tip: '这首歌是 ' + m.n + ' 人合唱（主艺：' + (m.f || '—') + '），但还没同步到该号自己的音乐人身份，暂时判断不了他排第几。可先按「共创歌曲」处理：合唱曲里非主艺人的播放通常不算进 650，建议换一首本人独唱的歌' };
   var myId = me[0] || '';
   if (!myId) return null;                    // 该号不是音乐人 → 交给「无650任务」标签，别重复报
   var pos = (m.i || []).indexOf(myId);
-  if (pos < 0) return { cls: 'b-red', txt: '绑错歌',
+  if (pos < 0) return { cls: 'b-red', txt: '歌曲无效·绑错歌',
     tip: '这首歌《' + (m.f || '') + '…》的 ' + m.n + ' 位作者里没有该号的音乐人身份（' + (me[1] || myId) + '）→ 播放再多也永远不会算进他的 650。必须改绑到他自己名下的歌' };
-  if (pos > 0) return { cls: 'b-orange', txt: '共创·非主艺',
+  if (pos > 0) return { cls: 'b-orange', txt: '共创歌曲·非主艺',
     tip: '这是 ' + m.n + ' 人合唱，该号排第 ' + (pos + 1) + ' 位（主艺是「' + (m.f || '—') + '」）。实测这类号 650 恒为 0%：合唱曲里非主艺人的播放基本不计入任务，建议改绑本人独唱的歌' };
-  return { cls: 'b-orange', txt: '共创·本人主艺',
+  return { cls: 'b-orange', txt: '共创歌曲·本人主艺',
     tip: '这是 ' + m.n + ' 人合唱，该号是第一艺人。比非主艺好，但仍比独唱差（播放会被分摊到其他艺人），能换独唱就换' };
 }
 
@@ -3656,23 +3656,28 @@ function computeMarks(r, susSet){
   if(a&&a.rate==null&&e.song&&!(e.added&&e.added>=DATA.date))add('b-gray','无650任务','后台没返回 650 任务：可能不是音乐人、没报名该任务或歌曲未过审，让号主去音乐人后台确认');
   // C 任务周期
   // 2026-10-25 补：入池 ≤2 天的新号即使 0% 也是正常爬坡（当天登记、次日才被听），
-  // 不能按「周期已结束」报，否则新号全被误标成售后问题 → 交给下面 E 组的「新号·未开刷」说明。
+  // 不能按「周期已结束」报，否则新号全被误标成售后问题 → 交给下面 E 组的「新号未开刷」说明。
   // 另加 rpc30>=650 门槛：播放只有个位数/几十次时 0% 只是没人听，不是「播放不计数」。
+  // 2026-10-26：周期归零（昨日≥80% 今日 0%）优先判定 —— 原来这种号会被下面 hasCycle 标成
+  // 「有播放·650为0」，看起来像故障，实际是换新周期。文案与「较昨日」列的灰徽章保持一致。
+  if(!hasSvc&&r.reset&&e.song)add('b-gray','周期归零','昨日 650 已到 '+(r.p&&r.p.rate!=null?r.p.rate+'%':'较高')+'、今天突然 0%：650 任务 31 天周期到点，新一期从 0 重新计（不管上期做没做满，没用完的百分比直接作废）。近30日播放量没塌，属正常，不用查');
   var hasCycle=false, isNewAcc=!(r.days==null||r.days>2);
-  if(!hasSvc&&!isNewAcc&&a&&a.rpc30!=null&&a.rpc30>=650&&(a.rate||0)===0){
+  if(!hasSvc&&!r.reset&&!isNewAcc&&a&&a.rpc30!=null&&a.rpc30>=650&&(a.rate||0)===0){
     hasCycle=true;
     if(r.streak>=2)add('b-orange','0%卡住·查周期','已连续 '+(r.streak+1)+' 天 0%，播放量却还在涨。实测这类号绝大多数是 650 任务周期已经结束、没有续期（网易音乐人工作台的 furtherVipGetTime 已过期，任务不再统计播放）→ 让号主去网易音乐人后台领取上期奖励并开启新一期，开启后会从 0 重新爬');
     else add('b-orange','有播放·650为0','近30日播放已有 650 次以上，但 650 进度是 0%：播放没被算成有效播放。多数是 650 任务周期已结束没续期，见下方「标记看不懂」第三节');
   }
   // D 进度停滞
-  if(!hasSvc&&!hasCycle&&a&&r.p&&a.rate!=null&&r.p.rate!=null&&a.rate<100&&a.rate-r.p.rate===0)add('b-yellow','今日零增长','650 进度和昨天完全一样。650 是后台分批结算，会停一两天再突然跳，先观察 2~3 天；若近30日播放也在跌，就是30天前老播放到期退出，属自然衰减');
-  if(!hasSvc&&!hasCycle&&a&&a.rate!=null&&a.rate<100&&r.streak&&r.streak>=2)add('b-yellow','连续'+r.streak+'天未涨','连续 '+r.streak+' 天 650 进度没动（没快照的断档天已跳过）；超过 4 天要人工查');
+  if(!hasSvc&&!hasCycle&&a&&r.p&&a.rate!=null&&r.p.rate!=null&&a.rate<100&&a.rate-r.p.rate===0)add('b-yellow','今日零增长','650 进度和昨天完全一样。650 是后台分批结算，会停一两天再突然跳，先观察 2~3 天；若近30日播放也在跌，就是30天前老播放到期退出，属自然衰减（做过满 100% 的号会一直回落到新播放补不回为止，不是故障）');
+  if(!hasSvc&&!hasCycle&&!r.reset&&a&&a.rate!=null&&a.rate<100&&r.streak&&r.streak>=2)add('b-yellow','连续'+r.streak+'天未涨','连续 '+r.streak+' 天 650 进度没涨（含小幅回落，没快照的断档天已跳过）。先看「近30日播放量」：在跌=30天滚动窗口老播放退出（做过满 100% 的号常见，属自然衰减，不用管）；在涨却不动=播放被判无效，超过 4 天才需要人工查');
   // E 入池状态
-  if(e.song&&a&&(a.rate||0)>=100)add('b-green','已满100','本周期 650 已达 100%：已经做满，不需要再刷更多（继续刷也不会有额外收益）。等下个 31 天周期重新起算会自动归零重爬');
-  else if(e.song&&r.days!=null&&r.days<=0)add('b-blue','次日开刷','今天/未来才登记，第二天才进轮转开始被听，所以现在进度 0% 是正常现象，不是故障');
-  else if(e.song&&!hasSvc&&!hasCycle&&r.days!=null&&r.days>=1&&r.days<=2&&!(a&&(a.rate||0)>=12))add('b-blue','新号·未开刷','入池第 '+r.days+' 天，按 31 人/天轮转最快也要 21 天才满 100%，现在进度低属正常爬坡。若到第 4 天仍为 0%，再按「0%卡住」排查');
+  if(e.song&&a&&(a.rate||0)>=100)add('b-green','已达100%','本周期 650 已达 100%：已经做满，不需要再刷更多（继续刷也不会有额外收益）。等下个 31 天周期重新起算会自动归零重爬');
+  else if(e.song&&r.days!=null&&r.days<=0)add('b-blue','次日才入池','今天/未来才登记，第二天才进轮转开始被听，所以现在进度 0% 是正常现象，不是故障');
+  else if(e.song&&!hasSvc&&!hasCycle&&r.days!=null&&r.days>=1&&r.days<=2&&!(a&&(a.rate||0)>=12))add('b-blue','新号未开刷','入池第 '+r.days+' 天，按 31 人/天轮转最快也要 21 天才满 100%，现在进度低属正常爬坡。若到第 4 天仍为 0%，再按「0%卡住」排查');
   // F 数据
-  if(!a&&e.song&&!(r.days!=null&&r.days<=0))add('b-gray','今日无数据','今天这一轮没采到该号快照（接口超时或号没跑），偶尔一次不用管');
+  // 2026-10-26：入池 ≤2 天的号本来就不该有快照（次日才开始被听、且新号往往还没开通任务），
+  // 不能算「没采到」。原来判据是 days<=0，导致昨天登记、今天首次入池的号被误标「今日无快照」。
+  if(!a&&e.song&&!(r.days!=null&&r.days<=2))add('b-gray','今日无快照','今天这一轮没采到该号快照（接口超时或号没跑），偶尔一次不用管');
   return { html: html, text: txt.join(' ') };
 }
 function render(){
@@ -3694,7 +3699,9 @@ function render(){
   else if(s==='rate')rows.sort(function(x,y){return ((y.a&&y.a.rate)||-1)-((x.a&&x.a.rate)||-1);});
   var withData=rows.filter(function(r){return r.a;});
   // 2026-10-24：公益听众号没有 uid 也没有歌，快照键永远对不上，不计入「今日无快照」，避免每天虚报
-  var noSnap=rows.filter(function(r){return !r.a&&r.e.song;}).length;
+  // 2026-10-26：与行内「今日无快照」同口径 —— 入池 ≤2 天的号本来就没有快照（次日才开刷），
+  // 不再算进告警数，否则每天新登记多少号就虚报多少个「缺数据」。
+  var noSnap=rows.filter(function(r){return !r.a&&r.e.song&&!(r.days!=null&&r.days<=2);}).length;
   var ups=rows.filter(function(r){return r.delta!=null&&r.delta>0;}).length;
   // 2026-10-25：周期归零的号（周期切换导致 100→0）不算「今日下跌」，单独计数
   var resets=rows.filter(function(r){return r.reset;}).length;
@@ -3709,7 +3716,7 @@ function render(){
   var svcWrong=0,svcCoop=0,svcWait=0;
   rows.forEach(function(r){
     var sv=r.sv,hasSvc=!!sv,hasCycle=!hasSvc&&r.a&&r.a.rpc30!=null&&r.a.rpc30>=650&&(r.a.rate||0)===0&&!(r.days!=null&&r.days<=2);
-    if(sv){ if(sv.txt==='绑错歌'||sv.txt==='查无此歌')svcWrong++; else svcCoop++; }
+    if(sv){ if(sv.txt.indexOf('歌曲无效')===0)svcWrong++; else svcCoop++; }
     if(r.e.song&&!hasSvc&&!hasCycle&&r.days!=null&&r.days>=1&&r.days<=2&&!(r.a&&(r.a.rate||0)>=12))svcWait++;
   });
   $('stats').innerHTML=
@@ -3724,8 +3731,8 @@ function render(){
    +'<div class="stat"><b>'+done100+'</b><span>已达100%</span></div>'
    +'<div class="stat'+(pendingIn?' warn':'')+'"><b>'+pendingIn+'</b><span>次日才入池</span></div>'
    +'<div class="stat'+(played0?' warn':'')+'"><b>'+played0+'</b><span>有播放·650为0</span></div>'
-   +'<div class="stat'+(svcWrong?' warn':'')+'" title="绑错歌 + 查无此歌：歌不是他名下 / 已下架，刷多少都不会涨，必须改绑"><b style="color:#a32d2d">'+svcWrong+'</b><span>歌曲无效</span></div>'
-   +'<div class="stat'+(svcCoop?' warn':'')+'" title="共创（合唱）歌曲：播放会被分摊给其他艺人，非主艺的号实测恒定 0%"><b style="color:#b85c00">'+svcCoop+'</b><span>共创歌曲</span></div>'
+   +'<div class="stat'+(svcWrong?' warn':'')+'" title="歌曲无效 = 绑错歌（歌的作者里没有他）或 查无此歌（已下架/删除）：刷多少都不会涨，必须改绑。搜索框直接搜「歌曲无效」可筛出这一类"><b style="color:#a32d2d">'+svcWrong+'</b><span>歌曲无效</span></div>'
+   +'<div class="stat'+(svcCoop?' warn':'')+'" title="共创歌曲 = 多人合唱：播放会被分摊给其他艺人，非主艺的号实测恒定 0%。搜索「共创歌曲」可筛出这一类"><b style="color:#b85c00">'+svcCoop+'</b><span>共创歌曲</span></div>'
    +'<div class="stat" title="入池 1~2 天、进度还很低：正常爬坡，不用查"><b style="color:#255ea6">'+svcWait+'</b><span>新号未开刷</span></div>';
   var h='';
   rows.forEach(function(r,i){
