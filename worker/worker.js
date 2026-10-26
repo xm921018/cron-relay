@@ -3573,7 +3573,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记，按 已发x/4 显示：30天内发布图文笔记天数≥4，4/4=已完成）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
   <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary>
-  <div class="muted" style="margin:6px 0 8px">原因：<b>手动删除</b>＝你在控制台/号池工具点的删除；<b>Cookie失效</b>＝播放前验活自动判死；<b>到期清理</b>＝账号有效期到了自动移除。已回池（迁移到另一群或当天重登）的号不算删号。</div><div id="deadList"></div></details>
+  <div class="muted" style="margin:6px 0 8px">原因：<b>手动删除</b>＝你在控制台/号池工具点的删除；<b>Cookie失效</b>＝播放前验活自动判死；<b>到期清理</b>＝账号有效期到了自动移除。已回池（迁移到另一群或当天重登）的号不算删号。<br>通知：<b>已通知</b>＝确认发出；<b>已回池·不发</b>＝号还在跑；<b>无邮箱·不发</b>＝没登记邮箱；<b>待判·12h</b>＝删后满 12 小时才判定该不该发；<b>自动判死·run.py 发信</b>＝早期记录，发信由播放任务临时触发，发没发事后查不到。</div><div id="deadList"></div></details>
   <details class="deadbox" id="legendBox"><summary><b>标记看不懂 / 数字怎么读？点开这份对照表</b></summary><div class="lgd">
     <b>一、先认清三个数（别再混）：</b>「650进度」= 音乐人后台的 650 任务完成度，100% 才算做完，是唯一有意义的成绩；「近30日播放量」= 工作台统计的播放次数，刷再多也不直接等于进度；「其他任务」= 网易塞在同一组里的另一个小任务（多半是「发布笔记」），跟播放和 650 一点关系都没有，一列显示「—」也是正常的。
     <br><b>二、标记对照（按「问题出在哪」分组，越靠上的越该先处理）：</b>
@@ -3946,7 +3946,10 @@ function renderRunbar(){
     // 手动删号要等 12 小时才判（迁移/重登不发），所以会先显示「待判」。
     function ntTxt(d){
       var st=d.notice;
-      if(!st){ return (d.reason||'')==='cookie_invalid'?'<span class="good">已通知</span>':'<span class="muted">—</span>'; }
+      // 2026-10-26：老记录（没有 dead_notice 行）原来对 cookie_invalid 一律显示「已通知」，
+      // 但这是「机制上应该发」而不是「查得到的已发」——10-23 那批手工调接口删的就没有 run.py
+      // 在场，一封都没出去。改成描述触发方式，不断言送达。可在图例里看口径。
+      if(!st){ return (d.reason||'')==='cookie_invalid'?'<span class="muted">自动判死·run.py 发信</span>':'<span class="muted">—</span>'; }
       if(st.state==='sent')return '<span class="good">已通知</span>';
       if(st.state==='claimed')return '<span class="muted">发送中</span>';
       if(st.state==='skip_returned')return '<span class="good">已回池·不发</span>';
