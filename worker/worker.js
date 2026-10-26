@@ -3008,7 +3008,7 @@ async function dispatchSnap650(onlyPool) {
     }
     try {
       const resp = await fetch('https://api.github.com/repos/' + r.owner + '/' + r.repo +
-        '/actions/workflows/snap650.yml/dispatches', {
+        '/actions/workflows/snapshot.yml/dispatches', {
         method: 'POST',
         headers: { Authorization: 'Bearer ' + tok, Accept: 'application/vnd.github+json',
                    'User-Agent': 'cron-relay-worker', 'Content-Type': 'application/json' },
