@@ -2703,15 +2703,18 @@ async function handle(request) {
         toSend.push({ pool: r.pool, uid: uid, name: nm, email: em, removed_at: String(r.removed_at) });
       }
       const stamp = bjStamp();
-      for (const s of skipped) {
-        await d1Run('UPDATE dead_notice SET state=?,skip_reason=?,claimed_at=? WHERE pool=? AND uid=? AND removed_at=?',
-          [s.state, s.why, stamp, s.pool, s.uid, s.removed_at]);
+      const isDry = body.dry === true;   // 干跑：只返回名单，不改任何状态（核对用）
+      if (!isDry) {
+        for (const s of skipped) {
+          await d1Run('UPDATE dead_notice SET state=?,skip_reason=?,claimed_at=? WHERE pool=? AND uid=? AND removed_at=?',
+            [s.state, s.why, stamp, s.pool, s.uid, s.removed_at]);
+        }
+        for (const s of toSend) {
+          await d1Run("UPDATE dead_notice SET state='claimed',claimed_at=? WHERE pool=? AND uid=? AND removed_at=?",
+            [stamp, s.pool, s.uid, s.removed_at]);
+        }
       }
-      for (const s of toSend) {
-        await d1Run("UPDATE dead_notice SET state='claimed',claimed_at=? WHERE pool=? AND uid=? AND removed_at=?",
-          [stamp, s.pool, s.uid, s.removed_at]);
-      }
-      return json({ ok: true, wait_h: waitH, cutoff: cutoff, to_send: toSend, skipped: skipped });
+      return json({ ok: true, dry: isDry, wait_h: waitH, cutoff: cutoff, to_send: toSend, skipped: skipped });
     }
     // 发信结果回写：sent = 已发；retry = 本轮失败，退回 pending 下次再试
     if (url.pathname === '/api/dead_sent' && request.method === 'POST') {
