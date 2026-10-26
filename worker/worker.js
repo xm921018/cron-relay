@@ -3715,15 +3715,17 @@ function render(){
   var played0=cntTxt('有播放·650为0')+cntTxt('0%卡住');
   var svcWrong=cntTxt('歌曲无效');
   var svcCoop=cntTxt('共创歌曲');
-  // 今日入池 = 今天（或未来日期）新登记、明天才进轮转的号
-  var newIn=rows.filter(function(r){return r.days!=null&&r.days<=0;}).length;
+  // 今日入池 = added 日期就是今天的那批号（明天才进轮转开始被听）。
+  // 注意跟「采集缺失」是两件事：新号本来就没有快照，不该算缺数据。
+  var newIn=rows.filter(function(r){return r.days===0;}).length;
   var done100=cntTxt('已达100%');
-  var miss=cntTxt('采集缺失');
   $('stats').innerHTML=
     '<div class="stat"><b>'+rows.length+'</b><span>账号总数</span></div>'
    +'<div class="stat"><b>'+withData.length+'</b><span>今日有数据</span></div>'
    +'<div class="stat"><b style="color:#c0392b">'+ups+'</b><span>今日上涨</span></div>'
    +'<div class="stat"><b style="color:#1e8449">'+downs+'</b><span>今日下跌</span></div>'
+   +'<div class="stat" title="added 日期就是今天的号：明天才进轮转开始被听，今天没有快照/进度是正常的。'
+   +'点「入池」列排序可以看各自登记日"><b style="color:#255ea6">'+newIn+'</b><span>今日入池</span></div>'
    +'<div class="stat"><b style="color:#888">'+resets+'</b><span>周期归零</span></div>'
    +'<div class="stat'+(zeroGrow?' warn':'')+'"><b>'+zeroGrow+'</b><span>今日零增长</span></div>'
    +'<div class="stat'+(stuck3?' warn':'')+'" title="连续 ≥3 天 650 进度没涨（已排除已满 100%、周期归零、歌曲有问题的号）。'+(stuck7?'其中 ≥7 天 '+stuck7+' 个。':'')+'先看「近30日播放量」：在跌=30天滚动窗口老播放退出（做过满 100% 的号常见，属自然衰减）；在涨却不动=播放被判无效。搜索「天未涨」可筛出这批号"><b>'+stuck3+'</b><span>3天+未涨</span></div>'
@@ -3731,9 +3733,8 @@ function render(){
    +'<div class="stat'+(played0?' warn':'')+'" title="近30日播放已有 650 次以上，但 650 进度还是 0%：多数是任务周期已结束没续期。搜索「有播放」可筛出"><b>'+played0+'</b><span>有播放·650为0</span></div>'
    +'<div class="stat'+(svcWrong?' warn':'')+'" title="歌曲无效 = 绑错歌（歌的作者里没有他）或 查无此歌（已下架/删除）：刷多少都不会涨，必须改绑。搜索框直接搜「歌曲无效」可筛出这一类"><b style="color:#a32d2d">'+svcWrong+'</b><span>歌曲无效</span></div>'
    +'<div class="stat'+(svcCoop?' warn':'')+'" title="共创歌曲 = 多人合唱：播放会被分摊给其他艺人，非主艺的号实测恒定 0%。搜索「共创歌曲」可筛出这一类"><b style="color:#b85c00">'+svcCoop+'</b><span>共创歌曲</span></div>'
-   +'<div class="stat" title="今天（或未来日期）新登记、明天才进轮转开始被听的号。新号前 1~2 天进度低是正常爬坡，不再单独打标记"><b style="color:#255ea6">'+newIn+'</b><span>今日入池</span></div>'
    +'<div class="stat" title="本周期已做满 100% 的号：继续刷没有额外收益，等下个 31 天周期归零重爬。搜索「已达100%」可筛出"><b>'+done100+'</b><span>已达100%</span></div>'
-   +(miss?'<div class="stat warn" title="今天这一轮没采到该号快照（接口超时或号没跑）。只有真的采不到才会出现这个数字，为 0 时整格隐藏"><b>'+miss+'</b><span>采集缺失</span></div>':'');
+   ;
   var h='';
   rows.forEach(function(r,i){
     var e=r.e,a=r.a;
