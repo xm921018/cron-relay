@@ -78,7 +78,11 @@ def main():
 
     sent, failed = [], []
     for t in todo:
-        who = t.get("name") or t.get("uid")
+        # 邮件称呼用的是账号名。管理工具手工加的号 name 会被写成 manual:12345678，
+        # 直接塞进「你好，manual:12345678：」很难看 —— 去掉前缀，退化成 uid。
+        who = str(t.get("name") or t.get("uid") or "")
+        if who.startswith("manual:"):
+            who = who[7:] or str(t.get("uid") or "")
         ok = False
         try:
             ok = notify.notify_relogin(t.get("email"), "", who)
