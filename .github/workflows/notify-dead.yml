@@ -1,0 +1,51 @@
+name: notify-dead
+
+# 2026-10-26 新增：手动删号（控制台删除，dead_log.reason=manual）的号主通知。
+#
+# 为什么需要单独一个 workflow：手动删号在 Cloudflare Worker 里直接删 D1 行完成，
+# 没有 Python 进程参与，而 smtp.qq.com:465 只能从 Actions 侧连 → 以前一封邮件都发不出去。
+# run.py 那条「判死→删号→直邮」只覆盖 cookie_invalid（播放前验活判死）。
+#
+# 为什么不是「删了就发」：最近 12 条 manual 里 7 条是 hz→dz 迁移、2 条是当天重登，
+# 只有 3 条真删。给迁移/重登的人发「账号信息过期」是纯误报。判定逻辑在 worker：
+# 删除满 12 小时后，同 uid/账号名在任一池又出现的视为没真删，不发。
+#
+# 每天北京 11:00 跑一次（UTC 03:00），错开 10:00 的快照采集。
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      wait_h:
+        description: "判定窗口（小时）：删号满这么久才判，默认 12"
+        required: false
+        default: "12"
+      dry:
+        description: "填 1 只查询不发送（用于核对名单）"
+        required: false
+        default: ""
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WORKER_URL: 'https://xx1031.xyz'
+      ASSIGN_PASS: ${{ secrets.ASSIGN_PASS }}
+      NB_PASS: ${{ secrets.NB_PASS }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_AUTH_CODE: ${{ secrets.EMAIL_AUTH_CODE }}
+      DEAD_WAIT_H: ${{ github.event.inputs.wait_h || '12' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -q requests
+      - name: dispatch dead notices
+        run: |
+          if [ "${{ github.event.inputs.dry }}" = "1" ]; then
+            python notify_dead.py --dry
+          else
+            python notify_dead.py
+          fi
