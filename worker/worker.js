@@ -3707,14 +3707,27 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   .twrap td:nth-child(1)::before,.twrap td:nth-child(2)::before,
   .twrap td:nth-child(3)::before,.twrap td:nth-child(14)::before,
   .twrap td:nth-child(15)::before{content:none}
-  .deadbox table,.lgd table{font-size:11.5px}
-  .deadbox table{display:table}.lgd table{display:table}
-  .deadbox thead,.lgd thead{display:table-header-group}
-  .deadbox tbody,.lgd tbody{display:table-row-group}
-  .deadbox tr,.lgd tr{display:table-row;background:none;border:0;border-radius:0;padding:0;margin:0;gap:0}
-  .deadbox td,.deadbox th,.lgd td,.lgd th{display:table-cell;flex:none;padding:5px 7px;border-bottom:1px solid #f2f2f2}
-  .deadbox td::before,.lgd td::before{content:none}
+  /* 「删号记录」6 列表 / 「标记对照表」3 列表，在 360px 下每列只剩几十 px，会被挤成一字一行。
+     手机端改成一条一条的块：删号记录 → 首行 池+UID+账号，下面 原因/通知/时间 各占一行带标签；
+     对照表 → 标记一行、意思一行、要怎么处理一行（前缀「意思｜」「处理｜」代替表头）。桌面端不受影响。 */
+  #deadList table{display:block;white-space:normal;border:0;font-size:11.5px}
+  #deadList thead{display:none}
+  #deadList tbody{display:block}
+  #deadList tr{display:block;padding:6px 0;border-bottom:1px solid #f2f4f6}
+  #deadList td{display:inline-block;padding:0 8px 0 0;border:0;vertical-align:top}
+  #deadList td:nth-child(4),#deadList td:nth-child(5),#deadList td:nth-child(6){display:block}
+  #deadList td:nth-child(4)::before{content:"原因｜";color:#9aa5b1}
+  #deadList td:nth-child(5)::before{content:"通知｜";color:#9aa5b1}
+  #deadList td:nth-child(6)::before{content:"时间｜";color:#9aa5b1}
   .lgd{font-size:11.5px}
+  .lgd table{display:block;white-space:normal;border:0;margin:4px 0 2px}
+  .lgd thead{display:none}
+  .lgd tbody,.lgd tr{display:block}
+  .lgd tr{padding:6px 0 7px;border-bottom:1px solid #f2f4f6}
+  .lgd td{display:block;padding:1px 0;border:0;line-height:1.65}
+  .lgd td:nth-child(2)::before{content:"意思｜";color:#9aa5b1;font-size:11px}
+  .lgd td:nth-child(3)::before{content:"处理｜";color:#9aa5b1;font-size:11px}
+  .lgd td[colspan]{display:block;margin:2px 0 0;padding:4px 8px;border-radius:6px}
 }
 </style></head><body>
 <div class="head"><h1 class="page-title">650 任务进阶控制台</h1><p class="page-sub">两群账号每日快照 · 数据由 Actions 播放时段顺带采集（T+1 可见）· CK 不在页面展示</p></div>
