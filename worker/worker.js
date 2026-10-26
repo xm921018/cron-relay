@@ -1396,9 +1396,45 @@ function groupPassCheck(c, body) {
   //    body.pass !== c.groupPass 校验，千万别改成走本函数，否则管理接口会对外敞开。
   return { ok: true };
 }
+// 危险管理接口的口令校验（2026-10-26 收紧）。
+// 背景：/api/report_dead 能按名单删号（带 confirm 直接删）、/api/resync 能强制重推 12 个 Secrets，
+// 而它们原来只认 GROUP_PASS —— 这个口令是发给全体成员的，还硬编码在号池管理工具/CK助手/安卓里，
+// 等于半公开：任何群成员一个 POST 就能清空号池。
+// 新口径：只要 KV 配了 ADMIN_PASS，这两个接口就【只】认 ADMIN_PASS；没配时才退回群口令（老部署兼容）。
+function adminPassOk(c, pass) {
+  const p = String(pass || '');
+  if (c.adminPass) return p === c.adminPass;
+  return !!(c.groupPass && p === c.groupPass);
+}
+// 跨群对穿口令（2026-10-26）：KV 键 PEER_KEY，两群存同一个 32 位随机值。
+// 背景：对穿原来直接复用两边的群口令（dz 的 PEER_PASS 就是 hz 的 music2026），
+// 于是「群口令」既能登记、又能读对端全池（含邮箱）、还能删改号。
+// 新口径：配了 PEER_KEY 就只认它，完全不再接受群口令；没配时才退回旧的 PEER_PASS 对穿。
+async function peerKey() { return cleanKV(await POOL.get('PEER_KEY')); }
+async function peerPassOk(pass) {
+  const k = await peerKey();
+  const p = String(pass || '');
+  if (k) return p === k;
+  const old = cleanKV(await POOL.get('PEER_PASS'));
+  return !!(old && p === old);
+}
 // ---- 分群计数辅助：历史条目没有 grp 字段的一律算一群 ----
 const grpOf = e => (Number(e && e.grp) === 2 ? 2 : 1);
 const groupLimitOf = (c, isG2) => (isG2 ? c.poolLimitG2 : c.poolLimitG1);
+// 满员闸口的计数口径（2026-10-26 修复）：排除「已过期但还没被 pruneExpired 清掉」的号。
+// 这些号到期后已不参与轮转，却仍然占着人数上限，导致满员提示比实际可登记名额早出现。
+// 口径：exp 为空 / forever → 在册；形如 YYYY-MM-DD 且 < 今天 → 不计；其它异常格式按在册处理（保守）。
+function activePoolSize(arr, today) {
+  const t = today || beijingDate();
+  let n = 0;
+  for (const e of (arr || [])) {
+    const x = String((e && e.exp) || '').trim();
+    if (!x || x === 'forever') { n++; continue; }
+    if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(x) && x < t) continue;
+    n++;
+  }
+  return n;
+}
 async function ghPublicKey() {
   const g = await GH();
   const r = await fetch(`https://api.github.com/repos/${g.owner}/${g.repo}/actions/secrets/public-key`, { headers: { Authorization: `token ${g.token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'cron-relay-worker' } });
@@ -1927,11 +1963,17 @@ async function d1Run(sql, params) {
     return true;
   } catch (e) { console.error('D1 run 失败:', e && e.message); return false; }
 }
-// 单条镜像（新增/修改后调用）；无 uid 的历史条目跳过（无法按 uid 定位）
+// 单条镜像（新增/修改后调用）。
+// 2026-10-26 修复：无 uid 的历史条目以前直接 return false，导致这些号在控制台上的
+// 「改歌 / 改邮箱 / 改有效期」只写进 KV，而读路径走 D1 → 刷新一次就变回旧值（假成功）。
+// D1 里这类行的定位键是 'name:<name>' 占位（见 d1RowToEntry 的反向还原），这里按同一口径写。
 async function d1Upsert(e) {
   if (!d1ok() || !e) return false;
-  const uid = e.uid != null ? String(e.uid) : '';
-  if (!uid) return false;
+  let uid = e.uid != null ? String(e.uid) : '';
+  if (!uid) {
+    if (!e.name) return false;
+    uid = 'name:' + String(e.name);
+  }
   return d1Run(
     'INSERT INTO accounts (pool,uid,name,song,ck,added,exp,no_listen,email,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) ' +
     'ON CONFLICT(pool,uid) DO UPDATE SET name=excluded.name, song=excluded.song, ck=excluded.ck, ' +
@@ -2313,10 +2355,13 @@ async function handle(request) {
     //      口令走 KV 键 PEER_PASS（两边设同一个值）；未设置则该接口不开放。
     if (url.pathname === '/api/songs' && request.method === 'GET') {
       const CORS = { 'Access-Control-Allow-Origin': '*' };
-      const peerPass = cleanKV(await POOL.get('PEER_PASS'));
-      if (!peerPass) return json({ message: '未开启跨群互听：请在 KV 添加 PEER_PASS 键' }, 503, CORS);
+      // 2026-10-26：口令优先 PEER_KEY（独立 32 位随机，两群同一个值），未配置才回退旧的 PEER_PASS。
       const c = await cfg();
-      if ((url.searchParams.get('pass') || '') !== peerPass) return json({ message: '口令错误' }, 403, CORS);
+      if (!(await peerPassOk(url.searchParams.get('pass')))) {
+        const anyKey = (await peerKey()) || cleanKV(await POOL.get('PEER_PASS'));
+        if (!anyKey) return json({ message: '未开启跨群互听：请在 KV 添加 PEER_KEY 键' }, 503, CORS);
+        return json({ message: '口令错误' }, 403, CORS);
+      }
       // 2026-10-22：这里原来调 pruneExpired()（= 全量重建 + 删键 + 写 master + 推 12 个 Secret）。
       // 但这是「取歌单」这种只读高频接口，不该带写副作用。改为单条 SELECT DISTINCT，
       // 过期号由 /api/pool（管理后台）或 resync 之类管理动作去清。
@@ -2469,7 +2514,8 @@ async function handle(request) {
       const _m1 = await mergePool();
       // 2026-10-22 修正计数口径：mergePool 只读本 worker 自己那一池（WHERE pool=POOL_NAME），
       // 所以行数就是本群人数。原来按 grpOf(e) 数，而 D1 表没有 grp 列 → 计数恒 0 → 上限永不生效。
-      const grpUsed = _m1.length;
+      // 2026-10-26：再排除已过期未清的号（不参与轮转却占名额）。
+      const grpUsed = activePoolSize(_m1);
       if (grpUsed >= myLimit) return json({ message: '本群名额已满（上限 ' + myLimit + ' 人），暂停登记。已有账号的互听和签到不受影响，请稍后再试或联系群主。' }, 429);
       const email = (body.email || '').trim();
       if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ message: '请填写常用邮箱' }, 400);
@@ -2493,7 +2539,7 @@ async function handle(request) {
       const isG2 = false;
       const myLimit = groupLimitOf(c, isG2);
       const _m2 = await mergePool();
-      const grpUsed = _m2.length;   // 同方式一：本池行数即本群人数（D1 无 grp 列，原口径恒 0）
+      const grpUsed = activePoolSize(_m2);   // 同方式一：排除已过期未清的号，口径一致
       if (grpUsed >= myLimit) return json({ message: '本群名额已满（上限 ' + myLimit + ' 人），暂停登记。已有账号的互听和签到不受影响，请稍后再试或联系群主。' }, 429);
       const mu = (body.musicU || '').trim();
       if (!mu) return json({ message: '请填写 MUSIC_U' }, 400);
@@ -2501,6 +2547,15 @@ async function handle(request) {
       if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ message: '请填写常用邮箱' }, 400);
       const v = await validateCookie(mu);
       if (!v.ok) return json({ message: v.msg }, 400);
+      // 2026-10-26 修复：网易接口连续不可达时 validateCookie 会用 blake2b「编造」一个 uid 放行
+      // （provisional），编造的 uid 与真实 uid 不同 → 网络恢复后同一账号可能被重复登记两条，
+      // 而且任何人都能拿任意 80+ 位 hex 串占名额。这条兜底只对管理员通道开放。
+      if (v.provisional) {
+        const isAdminReg = !!(c.adminPass && String(body.pass || '') === c.adminPass);
+        if (!isAdminReg) {
+          return json({ message: '网易校验接口暂时不可达（' + (v.diag || '网络异常') + '），为避免登记出错号，请稍后重试。' }, 503);
+        }
+      }
       const song = await resolveSong(body.link);
       if (!song.ok) return json({ message: song.msg }, 400);
       const expQ = parseExpInput(body.exp);
@@ -2520,6 +2575,20 @@ async function handle(request) {
       const c = await cfg();
       const gp3 = groupPassCheck(c, body);
       if (!gp3.ok) return json({ message: gp3.msg }, gp3.status);
+      // 2026-10-26 补频控：本接口只要手机号对得上就能改邮箱，没有任何验证。
+      // 这是给「老号补录/换邮箱」用的自助通道，不能加验证码（会打断正常补录），
+      // 但必须挡住脚本批量撞号：按出口 IP 每天 20 次。D1 不可用时回退 KV，绝不让频控静默失效。
+      const ip = String(request.headers.get('CF-Connecting-IP') || 'unknown').slice(0, 64);
+      let hits = await d1Hit('um', ip + ':' + beijingDate());
+      if (hits === null) {
+        try {
+          const rk = 'um:' + ip + ':' + beijingDate();
+          const cnt = parseInt(await POOL.get(rk), 10) || 0;
+          hits = cnt + 1;
+          if (cnt < 20) await POOL.put(rk, String(hits), { expirationTtl: 172800 });
+        } catch (e) { hits = 0; }
+      }
+      if (hits > 20) return json({ message: '今天修改邮箱的次数过多，请明天再试或联系群主。' }, 429);
       const email = (body.email || '').trim();
       if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ message: '请填写常用邮箱' }, 400);
       const phone = (body.phone || '').replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 65248)).replace(/[^0-9]/g, '');
@@ -2535,6 +2604,9 @@ async function handle(request) {
         target = master.find(e => e.name === phone) || null;
       }
       if (!target) return json({ message: '没有找到你的登记记录：请检查手机号/MUSIC_U 是否填错；如果还没登记过，请用上方的登记方式。' }, 404);
+      // 2026-10-26：留一条审计痕迹（谁/何时/把哪个号从什么邮箱改成了什么）。
+      // Worker 日志（wrangler tail / CF 面板）可查，出纠纷时能定位。
+      console.log('updatemail', JSON.stringify({ ip, key: entryKeyOf(target), uid: String(target.uid != null ? target.uid : ''), from: String(target.email || ''), to: email, at: new Date().toISOString() }));
       target.email = email;
       // 与 addEntry 同一套写入机制：独立键权威写 + master 缓存刷新 + 同步号池 Secrets
       await POOL.put(entryKeyOf(target), JSON.stringify(target));
@@ -2586,7 +2658,8 @@ async function handle(request) {
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400); }
       const c = await cfg();
       // 2026-10-22：补 `!c.groupPass` —— 以前 KV 里没配 GROUP_PASS 时，body.pass="" 即可通过
-      if (!c.groupPass || body.pass !== c.groupPass) return json({ message: '群口令错误' }, 403);
+      // 2026-10-26：改用 adminPassOk —— 配了 ADMIN_PASS 就只认管理口令，不再接受群口令
+      if (!adminPassOk(c, body.pass)) return json({ message: '管理口令错误' }, 403);
       let master = await mergePool();
       await pushPool(master, true);   // 强制推：resync 就是「现在就要一份全量快照到 Secrets」
       return json({ message: `已从 KV 重新同步 ${master.length} 条到 GitHub Secrets（NB_POOL_1..${12}）。` });
@@ -2596,7 +2669,8 @@ async function handle(request) {
       let body;
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400); }
       const c = await cfg();
-      if (!c.groupPass || body.pass !== c.groupPass) return json({ message: '群口令错误' }, 403);
+      // 2026-10-26：改用 adminPassOk —— 这是「能删号」的接口，绝不能再认半公开的群口令
+      if (!adminPassOk(c, body.pass)) return json({ message: '管理口令错误' }, 403);
       const deadSet = new Set((body.dead || []).map(x => String(x)));
       if (!deadSet.size) return json({ message: '没有需要清理的账号。' });
       const master = await mergePool();
@@ -2779,6 +2853,11 @@ async function handle(request) {
       const slice = String(body.slice == null ? 'x' : body.slice).replace(/[^\w-]/g, '').slice(0, 8) || 'x';
       const accs = (body.accs && typeof body.accs === 'object') ? body.accs : {};
       const clean = {};
+      // 2026-10-26 新增：任务「周期结束日」旁路收集（run.py workbench_info 的 periodEnd）。
+      // 为什么不塞进 clean：clean 会原样写进 D1 snapshots 表，多一个字段就撞「列不存在」。
+      // 只在上午补采（slice=am）这一路收集，避免凌晨 250 个分片并发读改写同一个 KV 键。
+      const perIn = {};
+      const collectPeriod = (slice === 'am');
       for (const k of Object.keys(accs).slice(0, 300)) {
         const a = accs[k] || {};
         clean[String(k).slice(0, 16)] = {
@@ -2791,6 +2870,10 @@ async function handle(request) {
                : ((a.missions && typeof a.missions === 'object') ? a.missions : {}),
           dur: a.dur == null ? null : Number(a.dur) || 0,
         };
+        if (collectPeriod) {
+          const peRaw = String(a.periodEnd || '');
+          if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(peRaw)) perIn[pool + '|' + String(k).slice(0, 16)] = peRaw;
+        }
       }
       // 时长沉淀：uid→登记歌曲时长(秒)。跟号走不跟日期走，存 console:durs（永不过期，随改随覆盖）。
       // body.durs 供一次性回填用；纯回填（accs 空）时不写当日快照，防止空分片覆盖。
@@ -2818,6 +2901,19 @@ async function handle(request) {
             if (dursChanged) await POOL.put('console:durs', JSON.stringify(cur));
           } catch (e) { /* 时长沉淀失败不影响快照 */ }
         }
+      }
+      // 周期结束日沉淀（2026-10-26）：跟号走不跟日期走，存 console:period 单键，
+      // 键带池前缀（'hz|uid' / 'dz|uid'），防同一个号挂两池时互相覆盖。
+      // 只在 slice=am 的补采里写，凌晨 250 片并发上报不碰这个键（KV 单键读改写会互相覆盖）。
+      if (Object.keys(perIn).length) {
+        try {
+          let cur = {};
+          try { cur = JSON.parse(await POOL.get('console:period') || '{}'); } catch (e) {}
+          const merged = Object.assign({}, cur, perIn);
+          const ks = Object.keys(merged);
+          if (ks.length > 3000) for (const k of ks.slice(0, ks.length - 3000)) delete merged[k];
+          await POOL.put('console:period', JSON.stringify(merged));
+        } catch (e) { /* 周期日沉淀失败不影响快照 */ }
       }
       // 实跑名单（2026-10-22）：run.py 把本片真正跑完播放的 uid 一起报上来，
       // 供 /api/coverage 核对「应跑 vs 实跑」。放在空快照提前返回之前，避免只有名单没有指标时丢数据。
@@ -2931,8 +3027,11 @@ async function handle(request) {
       let dz = [];
       try {
         const peerUrl = cleanKV(peerUrlRaw) || PEER_DEFAULT;
-        if (c2.groupPass) {
-          const r = await fetch(peerUrl.replace(/\/+$/, '') + '/api/peer/pool?pass=' + encodeURIComponent(c2.groupPass), { headers: { 'User-Agent': 'cron-relay-worker' } });
+        // 2026-10-26：优先用独立对穿口令 PEER_KEY；未配置才回退「本群群口令」的老对穿方式。
+        const pk = await peerKey();
+        const dzPass = pk || c2.groupPass;
+        if (dzPass) {
+          const r = await fetch(peerUrl.replace(/\/+$/, '') + '/api/peer/pool?pass=' + encodeURIComponent(dzPass), { headers: { 'User-Agent': 'cron-relay-worker' } });
           const d = await r.json();
           if (d && d.ok) dz = (d.entries || []).map(disp);
         }
@@ -2954,6 +3053,10 @@ async function handle(request) {
       } else {
         try { durs = JSON.parse(await POOL.get('console:durs') || '{}'); } catch (e) {}
       }
+      // 2026-10-26 新增：任务周期结束日（键 'hz|uid' / 'dz|uid' → YYYY-MM-DD）。
+      // 只在 slice=am 补采时写入；读失败降级 null，前端自动回退到「昨日≥80%」的启发式。
+      let periods = null;
+      try { periods = JSON.parse(await POOL.get('console:period') || 'null'); } catch (e) { periods = null; }
       // ---- 2026-10-23 组装运行状态数据（纯加法：全部是新键，不影响 hz/dz/durs/snap）----
       // coverage：应跑 vs 实跑。口径与 /api/coverage 逐字一致（expected=plans 里本池 uid，ran=runs 表）。
       const cov = {};
@@ -3011,7 +3114,7 @@ async function handle(request) {
       try { if (globalThis.CTX && typeof globalThis.CTX.waitUntil === 'function') globalThis.CTX.waitUntil(backfillMeta()); } catch (e) {}
       return json({ ok: true, date: date, prevDate: prevDate, hz: hz, dz: dz, durs: durs, snap: { cur: cur, prev: prev },
                     coverage: cov, actions: actions || [], dead: dead, deadToday: deadToday, suspects: suspects, fresh: fresh,
-                    streak: streak, songs: songs, artists: artists }, 200, CORS);
+                    streak: streak, songs: songs, artists: artists, periods: periods }, 200, CORS);
     }
     // 控制台编辑：hz 本地执行（与管理后台同一套逻辑）；dz 转发到对端 worker 的对等接口
     if (url.pathname === '/api/console/entry' && request.method === 'POST') {
@@ -3022,10 +3125,11 @@ async function handle(request) {
       if (body.pool === 'dz') {
         try {
           const c3 = await cfg();
-          // 对穿方向见 /api/console/data 处注释：调对端要用本群群口令（对端 PEER_PASS 键里存的就是它）
+          // 2026-10-26：优先用独立对穿口令 PEER_KEY；未配置才回退「本群群口令」的老对穿方式。
           const peerUrl = (cleanKV(await POOL.get('PEER_URL')) || PEER_DEFAULT).replace(/\/+$/, '');
-          if (!c3.groupPass) return json({ message: '本 worker 未配置群口令（KV 键 GROUP_PASS），无法编辑定制群账号' }, 503, CORS);
-          const fwd = { pass: c3.groupPass, action: body.action, uid: body.uid, name: body.name,
+          const fwdPass = (await peerKey()) || c3.groupPass;
+          if (!fwdPass) return json({ message: '本 worker 未配置对穿口令（KV 键 PEER_KEY / GROUP_PASS），无法编辑定制群账号' }, 503, CORS);
+          const fwd = { pass: fwdPass, action: body.action, uid: body.uid, name: body.name,
             ck: body.ck, link: body.link, email: body.email, exp: body.exp, noListen: body.noListen };
           const r = await fetch(peerUrl + '/api/peer/entry', { method: 'POST',
             headers: { 'Content-Type': 'application/json', 'User-Agent': 'cron-relay-worker' },
@@ -3300,7 +3404,7 @@ async function applyEntryEdit(body) {
       const x = String(body.exp).trim();
       if (x === 'forever' || x === '永久') { delete target.exp; changes.push('有效期=永久'); }
       else if (/^\d{4}-\d{2}-\d{2}$/.test(x)) { target.exp = x; changes.push('有效期=' + x); }
-      else if (/^\d{1,3}$/.test(x)) { const d = beijingDatePlus(parseInt(x, 10)); target.exp = d; changes.push('有效期=' + x + '天(' + d + '止)'); }
+      else if (/^\d{1,4}$/.test(x)) { const d = beijingDatePlus(parseInt(x, 10)); target.exp = d; changes.push('有效期=' + x + '天(' + d + '止)'); }
       else return json({ message: '有效期格式不对：填天数(如30)、日期(2026-12-31)或"永久"' }, 400, CORS);
     }
     if (body.noListen !== undefined && body.noListen !== null) {
@@ -3429,8 +3533,10 @@ $('btnCopy').onclick=function(){
   function fallback(){var ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');done();}catch(e){alert('复制失败，请手动选择');}document.body.removeChild(ta);}
 };
 $('btnCsv').onclick=function(){
-  var rows=[['序号','账号','UID','歌曲ID','入池日期','邮箱','标记']];
-  POOL.forEach(function(e,i){rows.push([i+1,e.name,e.uid||'',e.song||'',e.added||'',e.email||'',e.marks||'']);});
+  var rows=[['序号','账号','UID','歌曲ID','入池日期','邮箱','互听状态']];
+  // 2026-10-26 修复：末列原来是 e.marks，但 /api/pool 从不返回该字段 → 这一列永远是空。
+  // 改成导出现有字段里真正有意义的「互听状态」。
+  POOL.forEach(function(e,i){rows.push([i+1,e.name,e.uid||'',e.song||'',e.added||'',e.email||'',e.noListen?'只收不听':'正常']);});
   var csv='\ufeff'+rows.map(function(r){return r.map(function(v){return '"'+String(v).replace(/"/g,'""')+'"';}).join(',');}).join('\\r\\n');
   var a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
@@ -3467,13 +3573,13 @@ function render(){
    +'<div class="stat'+(STATS.noMail?' warn':'')+'"><b>'+STATS.noMail+'</b><span>未绑邮箱</span></div>'
    +'<div class="stat'+(STATS.noListen?' warn':'')+'"><b>'+STATS.noListen+'</b><span>只收号</span></div>'
    +'<div class="stat"><b>'+STATS.public+'</b><span>公益号</span></div>'
-   +'<div class="stat"><b>'+(STATS.limit||1500)+'</b><span>人数上限</span></div>'
+   +'<div class="stat"><b>'+(STATS.limit||1200)+'</b><span>人数上限</span></div>'
    +'<div class="stat'+(STATS.remain<=20?' warn':'')+'"><b>'+STATS.remain+'</b><span>剩余名额</span></div>'
    +'<div class="stat"><b>'+(list.length)+'</b><span>当前筛选</span></div>';
   var h='';
   list.forEach(function(e,i){
     var song=e.song?'<a class="song" target="_blank" href="https://music.163.com/song?id='+e.song+'">'+e.song+'</a>':'<span style="color:#bbb">—</span>';
-    h+='<tr><td class="num">'+(i+1)+'</td><td>'+esc(e.name)+'</td><td class="num">'+esc(e.uid)+'</td><td class="num">'+song+'</td><td class="num">'+esc(e.added)+'</td><td>'+esc(e.email||'—')+'</td><td>'+badges(e)+'</td></tr>';
+    h+='<tr><td class="num">'+(i+1)+'</td><td>'+esc(String(e.name||'').replace(/^manual:/,'手动·'))+'</td><td class="num">'+esc(e.uid)+'</td><td class="num">'+song+'</td><td class="num">'+esc(e.added)+'</td><td>'+esc(e.email||'—')+'</td><td>'+badges(e)+'</td></tr>';
   });
   $('tb').innerHTML=h||'<tr><td colspan="7" style="text-align:center;color:#999;padding:20px">没有匹配的账号</td></tr>';
 }
@@ -3759,9 +3865,17 @@ function buildRows(){
       var delta=(a&&p&&a.rate!=null&&p.rate!=null)?(a.rate-p.rate):null;
       // 2026-10-25：周期归零判定 —— 昨日已接近满(≥80%)、今天突然 0%，但近30日播放量没塌(仍有昨日90%以上)。
       // 这是 650 任务换新周期（进度重新从 0 起算），不是掉量，不该算进「今日下跌」、也不该显示成 -100。
-      var reset=!!(a&&p&&a.rate===0&&p.rate!=null&&p.rate>=80&&(a.rpc30||0)>=(p.rpc30||0)*0.9);
+      // 2026-10-26 改进：优先用真实周期结束日（DATA.periods 的 '池|uid' 键，来自工作台 furtherVipGetTime）。
+      //   原来只认「昨日≥80%」，上期只做到 40% 就到期的号会漏判 → 显示成「今日下跌 -40」+「650为0·卡住」，
+      //   是当前最大的售后误报源。有真实到期日就直接判，没有（还没采到）才退回老启发式，保证不退化。
+      var peRaw=(DATA.periods&&DATA.periods[pool+'|'+String(e.uid)])||'';
+      var peExpired=!!(peRaw&&/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(peRaw)&&peRaw<DATA.date);
+      var reset=!!(a&&a.rate===0&&e.song&&(
+        peExpired ||
+        (p&&p.rate!=null&&p.rate>=80&&(a.rpc30||0)>=(p.rpc30||0)*0.9)
+      ));
       var st=(DATA.streak&&DATA.streak[pool]&&DATA.streak[pool][String(e.uid)])||0;
-      rows.push({pool:pool,e:e,a:a,p:p,delta:delta,streak:st,reset:reset,
+      rows.push({pool:pool,e:e,a:a,p:p,delta:delta,streak:st,reset:reset,pe:peRaw,
                  days:daysSince(e.added),sv:songVerdict(e,a)});
     });
   });
@@ -3784,9 +3898,15 @@ function computeMarks(r, susSet){
   // 2026-10-25 补：入池 ≤2 天的新号即使 0% 也是正常爬坡（当天登记、次日才被听），
   // 不能按「周期已结束」报，否则新号全被误标成售后问题 → 新号前 1~2 天不打标记，只在顶部「今日入池」计数。
   // 另加 rpc30>=650 门槛：播放只有个位数/几十次时 0% 只是没人听，不是「播放不计数」。
-  // 2026-10-26：周期归零（昨日≥80% 今日 0%）优先判定 —— 原来这种号会被下面 hasCycle 标成
-  // 「有播放·650为0」，看起来像故障，实际是换新周期。文案与「较昨日」列的灰徽章保持一致。
-  if(!hasSvc&&r.reset&&e.song)add('b-gray','周期归零','昨日 650 已到 '+(r.p&&r.p.rate!=null?r.p.rate+'%':'较高')+'、今天突然 0%：650 任务 31 天周期到点，新一期从 0 重新计（不管上期做没做满，没用完的百分比直接作废）。近30日播放量没塌，属正常，不用查');
+  // 2026-10-26：周期归零（昨日≥80% 今日 0%，或真实周期日已过）优先判定 —— 原来这种号会被下面
+  // hasCycle 标成「有播放·650为0」，看起来像故障，实际是换新周期。文案与「较昨日」列的灰徽章一致。
+  // 有真实到期日时直接报出日期，号主能一眼看到"该去后台开启新一期了"。
+  if(!hasSvc&&r.reset&&e.song){
+    var peTip=(r.pe&&r.pe<DATA.date)
+      ? '任务周期结束日 '+r.pe+' 已到期、今天进度 0%：650 任务按 31 天结算，到期后不再统计播放。新一期要从 0 重新爬，需要号主本人在音乐人后台「领取上期奖励 / 开启新一期」'
+      : '昨日 650 已到 '+(r.p&&r.p.rate!=null?r.p.rate+'%':'较高')+'、今天突然 0%：650 任务 31 天周期到点，新一期从 0 重新计（不管上期做没做满，没用完的百分比直接作废）。近30日播放量没塌，属正常，不用查';
+    add('b-gray','周期归零',peTip);
+  }
   var hasCycle=false, isNewAcc=!(r.days==null||r.days>2);
   // 2026-10-26：这里原来写「(a.rate || 0) === 0」—— rate 为 null（后台没返回 650 任务）时
   // 0 也成立，于是「无650任务」的号被同时标成「有播放·650为0」，等于告诉号主
@@ -3956,7 +4076,11 @@ function renderRunbar(){
       if(st.state==='skip_noemail')return '<span class="muted">无邮箱·不发</span>';
       // 过了判定窗口还在 pending ＝ 已经判过、发信失败被退回重试（notify_dead 的回执），
       // 这时候再写「待判·12h」会让人以为系统还没干活。
-      var t0=Date.parse(String(st.removed_at||'').replace(' ','T')+'Z');
+      // 2026-10-26 修复：removed_at 是 bjStamp() 生成的【北京时间】字符串，原来直接拼 'Z'
+      // 当 UTC 解析，基准差 8 小时 → 「待判·12h」实际要到 21 小时才变「待发送·重试中」。
+      // 带时区后缀的值原样解析，不带后缀的一律按 +08:00 解释。
+      var rawT=String(st.removed_at||'');
+      var t0=Date.parse(/[Zz]$|[+-][0-9]{2}:[0-9]{2}$/.test(rawT)?rawT:(rawT.replace(' ','T')+'+08:00'));
       if(!isNaN(t0)&&(Date.now()-t0)>13*3600000)return '<span class="muted">待发送·重试中</span>';
       return '<span class="muted">待判·12h</span>';
     }
