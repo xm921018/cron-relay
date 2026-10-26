@@ -1897,6 +1897,24 @@ async function d1LogDead(entries, reason) {
   }
 }
 
+// 北京时间时间戳（YYYY-MM-DD HH:MM:SS），dead_log / dead_notice 统一口径，字符串可比大小
+function bjStamp(ms) {
+  return new Date((ms != null ? ms : Date.now()) + 8 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+}
+
+// 手动删号的「是否通知号主」队列（2026-10-26 新增）。
+// 背景：控制台删号在 worker 内部完成（applyEntryEdit），全程没有任何 Python 进程参与，
+//       而 SMTP 只能从 GitHub Actions 侧发 → 之前 12 条手动删除一封邮件都没发出去。
+// 口径：不无脑发，只对「真删」发（判定逻辑见 /api/dead_pending）。
+// 没留邮箱的号不入队 —— 反正发不出去，省得队列里堆一堆 skip。
+async function d1QueueNotice(e) {
+  if (!d1ok() || !e) return false;
+  const em = String(e.email || '').trim();
+  if (!em) return false;
+  return d1Run('INSERT OR IGNORE INTO dead_notice (pool,uid,name,email,removed_at,state) VALUES (?,?,?,?,?,?)',
+    [POOL_NAME, String(e.uid != null ? e.uid : ''), String(e.name || ''), em, bjStamp(), 'pending']);
+}
+
 async function d1Run(sql, params) {
   if (!d1ok()) return false;
   try {
@@ -2639,6 +2657,85 @@ async function handle(request) {
         + `剩余 ${after.length} 个。` });
     }
     // ====================================================================
+    // 手动删号的「通知号主」判定队列（2026-10-26 新增，纯新增路由）
+    // 为什么要单独一套：控制台删号是在 worker 里直接删 D1 行完成的，没有 Python 进程
+    //   参与，而 smtp.qq.com:465 只能从 GitHub Actions 发 → 手动删号的号主一封邮件都收不到。
+    // 为什么不能无脑发：实测最近 12 条 manual 里 7 条是 hz→dz 迁移、2 条是删了当天重登，
+    //   只有 3 条真离开系统。给前 9 位发「账号信息过期，麻烦重新登记」纯属误报（他们号好好的）。
+    // 判定口径（用户 2026-10-26 定）：删除时入队(pending) → 等满 12 小时 → 再判
+    //   ① 同 uid 或同账号名在任一池又出现了 → 迁移/重登 → 不发（skip_returned）
+    //   ② 没留邮箱 → 不发（skip_noemail）
+    //   ③ 其余视为真删 → 返回给 Actions，由 notify.py 发那封现成模板
+    // 并发保护：判完立刻标 claimed；发信成功后回调 /api/dead_sent 标 sent，失败回调 retry
+    //   退回 pending；claimed 超过 2 小时自动回 pending（runner 中途挂掉不至于永久卡住）。
+    // ====================================================================
+    if (url.pathname === '/api/dead_pending' && request.method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400); }
+      const c = await cfg();
+      if (!c.assignPass) return json({ ok: false, message: '未配置 ASSIGN_PASS' }, 503);
+      if (body.pass !== c.assignPass && !(c.adminPass && body.pass === c.adminPass)) return json({ message: '口令错误' }, 403);
+      if (!d1ok()) return json({ ok: false, message: 'D1 未绑定' }, 503);
+      const waitH = Math.max(0, Number(body.wait_h != null ? body.wait_h : 12) || 0);
+      const nowMs = Date.now();
+      const cutoff = bjStamp(nowMs - waitH * 3600000);
+      // claimed 卡住超过 2 小时的回退，避免 runner 挂死把这批永久占住
+      await d1Run("UPDATE dead_notice SET state='pending',claimed_at=NULL WHERE state='claimed' AND claimed_at<=?",
+        [bjStamp(nowMs - 2 * 3600000)]);
+      const pend = await d1All(
+        'SELECT pool,uid,name,email,removed_at FROM dead_notice WHERE state=? AND removed_at<=? ORDER BY removed_at LIMIT 100',
+        ['pending', cutoff]) || [];
+      const toSend = [], skipped = [];
+      for (const r of pend) {
+        const uid = String(r.uid || ''), nm = String(r.name || '');
+        // 「回来了吗」：同 uid 或同账号名出现在任一池（hz/dz 都算）→ 迁移或重登，不该发
+        let back = '';
+        const conds = [], vals = [];
+        if (uid) { conds.push('uid=?'); vals.push(uid); }
+        if (nm) { conds.push('name=?'); vals.push(nm); }
+        if (conds.length) {
+          const q = await d1All('SELECT pool FROM accounts WHERE ' + conds.join(' OR ') + ' LIMIT 1', vals);
+          if (q && q.length) back = String(q[0].pool || '');
+        }
+        if (back) { skipped.push({ pool: r.pool, uid: uid, name: nm, removed_at: r.removed_at, state: 'skip_returned', why: '已在 ' + back + ' 池' }); continue; }
+        const em = String(r.email || '').trim();
+        if (!em) { skipped.push({ pool: r.pool, uid: uid, name: nm, removed_at: r.removed_at, state: 'skip_noemail', why: '未登记邮箱' }); continue; }
+        toSend.push({ pool: r.pool, uid: uid, name: nm, email: em, removed_at: String(r.removed_at) });
+      }
+      const stamp = bjStamp();
+      for (const s of skipped) {
+        await d1Run('UPDATE dead_notice SET state=?,skip_reason=?,claimed_at=? WHERE pool=? AND uid=? AND removed_at=?',
+          [s.state, s.why, stamp, s.pool, s.uid, s.removed_at]);
+      }
+      for (const s of toSend) {
+        await d1Run("UPDATE dead_notice SET state='claimed',claimed_at=? WHERE pool=? AND uid=? AND removed_at=?",
+          [stamp, s.pool, s.uid, s.removed_at]);
+      }
+      return json({ ok: true, wait_h: waitH, cutoff: cutoff, to_send: toSend, skipped: skipped });
+    }
+    // 发信结果回写：sent = 已发；retry = 本轮失败，退回 pending 下次再试
+    if (url.pathname === '/api/dead_sent' && request.method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400); }
+      const c = await cfg();
+      if (!c.assignPass) return json({ ok: false, message: '未配置 ASSIGN_PASS' }, 503);
+      if (body.pass !== c.assignPass && !(c.adminPass && body.pass === c.adminPass)) return json({ message: '口令错误' }, 403);
+      if (!d1ok()) return json({ ok: false, message: 'D1 未绑定' }, 503);
+      const items = (body.items || []).slice(0, 200);
+      const retry = body.result === 'retry';
+      const stamp = bjStamp();
+      let n = 0;
+      for (const it of items) {
+        const ok = retry
+          ? await d1Run("UPDATE dead_notice SET state='pending',claimed_at=NULL,sent_at=NULL WHERE pool=? AND uid=? AND removed_at=?",
+            [String(it.pool || ''), String(it.uid || ''), String(it.removed_at || '')])
+          : await d1Run("UPDATE dead_notice SET state='sent',sent_at=? WHERE pool=? AND uid=? AND removed_at=?",
+            [stamp, String(it.pool || ''), String(it.uid || ''), String(it.removed_at || '')]);
+        if (ok) n++;
+      }
+      return json({ ok: true, updated: n, result: retry ? 'retry' : 'sent' });
+    }
+    // ====================================================================
     // 进阶控制台（2026-10-22 新增，全部为纯新增路由，不改动任何既有路由）
     // 页面 /console；数据流：两群 run.py 播完顺带查工作台 → POST /api/snap 归口本 worker KV
     //（key: snap:<日期>:<pool>:<分片>，90 天过期）→ 控制台按日期聚合展示 + 日环比 + 编辑。
@@ -2786,7 +2883,7 @@ async function handle(request) {
       //   suspectRows → accounts.suspect_at!='' 的待复核号（注意空串不是 NULL，不能写 IS NOT NULL）
       //   freshRows → 各池当天快照最后写入时间（数据新鲜度）
       //   actions   → 两仓库最近一次 run.yml 作业状态（fetchActionsStatus 内部带 KV 5 分钟缓存）
-      const [master, c2, cur, prev, dr, peerUrlRaw, plan, ranRows, deadRows, suspectRows, freshRows, actions, streakRows, songRows, accRows] = await Promise.all([
+      const [master, c2, cur, prev, dr, peerUrlRaw, plan, ranRows, deadRows, suspectRows, freshRows, actions, streakRows, songRows, accRows, noticeRows] = await Promise.all([
         mergePool(),
         cfg(),
         readSnapDay(date),
@@ -2807,6 +2904,9 @@ async function handle(request) {
         // 纯只读、失败降级为 null，缺数据时页面只是不打这两个标签，不影响其它列。
         d1ok() ? d1All('SELECT song,n_artists,artists,first_artist,gone FROM song_meta').catch(() => null) : Promise.resolve(null),
         d1ok() ? d1All('SELECT uid,artist_id,artist_name FROM acc_meta').catch(() => null) : Promise.resolve(null),
+        // 2026-10-26：手动删号的「通知号主」判定状态（dead_notice），只用于在删号记录里
+        // 标一行「已通知 / 已回池不发 / 待判」。纯只读，失败降级为 null。
+        d1ok() ? d1All('SELECT pool,uid,removed_at,state,sent_at,skip_reason FROM dead_notice ORDER BY removed_at DESC LIMIT 60').catch(() => null) : Promise.resolve(null),
       ]);
       const disp = e => ({
         name: e.name || '', uid: e.uid != null ? String(e.uid) : '',
@@ -2861,8 +2961,16 @@ async function handle(request) {
                      pct: exp.length ? Math.round((exp.length - missing.length) * 1000 / exp.length) / 10 : 0 };
         }
       }
+      // 2026-10-26：通知状态索引（按「池|uid」取最近一条判定）。只覆盖手动删号；
+      // cookie_invalid 的号由 run.py 当场发信，不进这张表。
+      const noticeMap = {};
+      for (const r of (noticeRows || [])) {
+        const k = (r.pool === 'dz' ? 'dz' : 'hz') + '|' + String(r.uid || '');
+        if (!noticeMap[k]) noticeMap[k] = { state: r.state || '', removed_at: r.removed_at || '', sent_at: r.sent_at || '', why: r.skip_reason || '' };
+      }
       const dead = (deadRows || []).map(r => ({ pool: r.pool === 'dz' ? 'dz' : 'hz', uid: String(r.uid || ''),
-                                                name: r.name || '', reason: r.reason || '', at: r.at || '' }));
+                                                name: r.name || '', reason: r.reason || '', at: r.at || '',
+                                                notice: noticeMap[(r.pool === 'dz' ? 'dz' : 'hz') + '|' + String(r.uid || '')] || null }));
       const suspects = (suspectRows || []).map(r => ({ pool: r.pool === 'dz' ? 'dz' : 'hz', uid: String(r.uid || ''),
                                                        name: r.name || '', since: r.suspect_at || '' }));
       const fresh = {};
@@ -3141,6 +3249,9 @@ async function applyEntryEdit(body) {
     } catch (e) {}
     const kept = master.filter(e => e !== target);
     await d1LogDead([target], 'manual');
+    // 2026-10-26：同时进「通知号主」判定队列（12 小时后判是不是真删，见 /api/dead_pending）。
+    // 这里是纯新增的一行写入，不影响任何既有行为；写失败也只是少一封邮件。
+    try { await d1QueueNotice(target); } catch (e) { console.error('通知队列写入失败:', e && e.message); }
     // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
     await pushPool(kept);
     try { await refreshPoolSnap(); } catch (e) {}
@@ -3797,9 +3908,20 @@ function renderRunbar(){
   if(D.length||S.length){
     $('deadBox').hidden=false;
     var dh='';
-    D.forEach(function(d){dh+='<tr><td>'+(d.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(d.uid)+'</td><td>'+esc(d.name)+'</td><td>'+esc(d.reason||'')+'</td><td class="num">'+esc((d.at||'').slice(5,16))+'</td></tr>';});
-    S.forEach(function(s){dh+='<tr><td>'+(s.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(s.uid)+'</td><td>'+esc(s.name)+'</td><td colspan="2">待复核（suspect_at '+esc((s.since||'').slice(0,16))+'）</td></tr>';});
-    $('deadList').innerHTML='<table><thead><tr><th>池</th><th>UID</th><th>账号</th><th>原因</th><th>时间</th></tr></thead><tbody>'+dh+'</tbody></table>';
+    // 2026-10-26：「通知号主」列。cookie_invalid 是 run.py 当场发信，恒为已通知；
+    // 手动删号要等 12 小时才判（迁移/重登不发），所以会先显示「待判」。
+    function ntTxt(d){
+      var st=d.notice;
+      if(!st){ return (d.reason||'')==='cookie_invalid'?'<span class="good">已通知</span>':'<span class="muted">—</span>'; }
+      if(st.state==='sent')return '<span class="good">已通知</span>';
+      if(st.state==='claimed')return '<span class="muted">发送中</span>';
+      if(st.state==='skip_returned')return '<span class="good">已回池·不发</span>';
+      if(st.state==='skip_noemail')return '<span class="muted">无邮箱·不发</span>';
+      return '<span class="muted">待判·12h</span>';
+    }
+    D.forEach(function(d){dh+='<tr><td>'+(d.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(d.uid)+'</td><td>'+esc(d.name)+'</td><td>'+esc(d.reason||'')+'</td><td>'+ntTxt(d)+'</td><td class="num">'+esc((d.at||'').slice(5,16))+'</td></tr>';});
+    S.forEach(function(s){dh+='<tr><td>'+(s.pool==='hz'?'主群':'定制')+'</td><td class="num">'+esc(s.uid)+'</td><td>'+esc(s.name)+'</td><td colspan="3">待复核（suspect_at '+esc((s.since||'').slice(0,16))+'）</td></tr>';});
+    $('deadList').innerHTML='<table><thead><tr><th>池</th><th>UID</th><th>账号</th><th>原因</th><th>通知</th><th>时间</th></tr></thead><tbody>'+dh+'</tbody></table>';
   }
 }
 window.openEdit=function(pool,uid,name){
