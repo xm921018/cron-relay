@@ -63,7 +63,16 @@ PLAY_RATIO_MIN, PLAY_RATIO_MAX = 0.55, 0.70
 BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 PEER_WORKER_URL = os.environ.get("PEER_WORKER_URL", "").strip()
-PEER_PASS = os.environ.get("PEER_PASS", "").strip() or os.environ.get("NB_PASS", "").strip()
+# 2026-10-26：跨群对穿改用独立强口令 PEER_KEY（两群 KV 存同一个 32 位随机值）。
+# 原来复用群口令，而群口令是发给全体成员的 → 谁都能读对端全池（含邮箱）。
+# 没配 PEER_KEY 时才回退旧口径（PEER_PASS / NB_PASS），保证老 Secret 布局也能跑。
+PEER_PASS = (os.environ.get("PEER_KEY", "").strip()
+             or os.environ.get("PEER_PASS", "").strip()
+             or os.environ.get("NB_PASS", "").strip())
+# 2026-10-26：删号上报（/api/report_dead）改用管理口令 ADMIN_PASS。
+# 这个接口能按名单删号，不能再认群口令（群口令半公开，一个 POST 就能清空号池）。
+# 没配 ADMIN_PASS 时回退 NB_PASS —— worker 侧同样「配了 ADMIN_PASS 就只认它」，两边口径一致。
+REPORT_PASS = os.environ.get("ADMIN_PASS", "").strip() or os.environ.get("NB_PASS", "").strip()
 
 # ---- D1 每日轮转分配（2026-10-22）----
 # 由本群 worker 从 D1 统一计算「本班跑哪些号、每个号听哪 31 首」，替代 GitHub Secrets 分片。
@@ -81,7 +90,9 @@ ASSIGN_DAY = os.environ.get("ASSIGN_DAY", "").strip()
 # 播放时段顺带查一次创作者后台（同 CK 同 IP 同会话，只读，不新增任何独立查询通道），
 # 每个分片跑完把本片所有号的指标打包上报到主站 KV（两群统一归口 xx1031.xyz），控制台 /console 聚合展示。
 SNAP_URL = os.environ.get("SNAP_URL", "https://xx1031.xyz").strip()
-POOL_TAG = "dz" if "dz." in WORKER_URL else "hz"
+# 2026-10-26：原来只靠 "dz." in WORKER_URL 猜自己是哪个群，改域名/加反代就会猜错
+# （猜错的后果是快照写进另一个池、控制台整个错位）。改成环境变量显式优先，域名判断只作回退。
+POOL_TAG = os.environ.get("POOL_TAG", "").strip() or ("dz" if "dz." in WORKER_URL else "hz")
 
 _EAPI_KEY = "e82ckenh8dichen8"   # eapi 公开已知密钥
 _EAPI_SALT = "36cd479b6b5"       # eapi 固定 salt
@@ -223,7 +234,18 @@ class Client:
             missions[code] = pr
             if code == "mission_code_recently_play_effect_count_v2":
                 rate = pr
-        return {"rate": rate, "rpc30": d.get("recentPlayCount30"), "missions": missions}
+        # 2026-10-26 新增：目标任务「周期结束日」（data 层的 furtherVipGetTime，毫秒时间戳）。
+        # 为什么要采：任务周期 31 天，周期结束后后台不再统计播放，进度会冻结在当时那个数字。
+        # 以前控制台只能靠「昨日≥80% 今日归 0」猜，昨日只有 40% 的真到期号会被误报成
+        # 「今日下跌」。有了真实到期日就能精确判断，且不增加任何额外请求（同一个响应里就有）。
+        period_end = None
+        _pv = d.get("furtherVipGetTime")
+        if _pv:
+            try:
+                period_end = (datetime.utcfromtimestamp(int(_pv) / 1000) + timedelta(hours=8)).date().isoformat()
+            except (TypeError, ValueError, OverflowError, OSError):
+                period_end = None
+        return {"rate": rate, "rpc30": d.get("recentPlayCount30"), "missions": missions, "periodEnd": period_end}
 
     def playlist_tracks(self, pid, limit=200):
         """公开歌单的前 limit 首歌。返回 [(id, 时长秒)]，失败返回 []。"""
@@ -414,8 +436,21 @@ def confirm_dead(ck, name):
     return False
 
 
+def _load_cfg():
+    """读 cfg.json；文件缺失/损坏/不是对象时用默认参数继续跑，不让整轮任务崩掉。
+    2026-10-26：原来是 json.load(open(...))，既没 with 也不吞异常 —— 配置文件写坏
+    或编码变了会让所有分片直接抛异常退出（表现为「整晚一片红」）。"""
+    try:
+        with open("cfg.json", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception as e:
+        print("::warning::cfg.json 读取失败，改用默认参数：%s" % e)
+        return {}
+
+
 def main():
-    cfg = json.load(open("cfg.json", encoding="utf-8"))
+    cfg = _load_cfg()
     plays = int(cfg.get("plays_per_account", 28))
     skip_prob = float(cfg.get("skip_prob", 0.08))
     mixed_min = int(cfg.get("mixed_plays_min", 6))
@@ -699,7 +734,7 @@ def main():
         deleted = []
         try:
             r = requests.post(WORKER_URL + "/api/report_dead", json={
-                "pass": os.environ.get("NB_PASS", ""),
+                "pass": REPORT_PASS,
                 "dead": dead_names,
                 "confirm": True,
             }, timeout=30)
