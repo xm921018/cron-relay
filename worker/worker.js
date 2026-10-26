@@ -3698,27 +3698,24 @@ function render(){
   if(s==='delta')rows.sort(function(x,y){return (y.delta==null?-999:y.delta)-(x.delta==null?-999:x.delta);});
   else if(s==='rate')rows.sort(function(x,y){return ((y.a&&y.a.rate)||-1)-((x.a&&x.a.rate)||-1);});
   var withData=rows.filter(function(r){return r.a;});
-  // 2026-10-24：公益听众号没有 uid 也没有歌，快照键永远对不上，不计入「今日无快照」，避免每天虚报
-  // 2026-10-26：与行内「今日无快照」同口径 —— 入池 ≤2 天的号本来就没有快照（次日才开刷），
-  // 不再算进告警数，否则每天新登记多少号就虚报多少个「缺数据」。
-  var noSnap=rows.filter(function(r){return !r.a&&r.e.song&&!(r.days!=null&&r.days<=2);}).length;
+  // 2026-10-26：顶部统计一律改成「按行内标记的文本计数」——原来每个数字都自己重算一遍条件，
+  // 与 computeMarks 的判据悄悄跑偏，出现「顶部说歌曲无效 2 个，搜『歌曲无效』一行都搜不到」这种
+  // 对不上的情况（还出现过顶部『今日无快照 19』= 当天全部新登记号）。现在同一个数字只有一个来源：
+  // 行内标记。顶部哪个数字可疑，把那个词放进搜索框就能拉到同一批号，永远不会再漂移。
+  var cntTxt=function(t){return rows.filter(function(r){return (r.markText||'').indexOf(t)>=0;}).length;};
   var ups=rows.filter(function(r){return r.delta!=null&&r.delta>0;}).length;
-  // 2026-10-25：周期归零的号（周期切换导致 100→0）不算「今日下跌」，单独计数
-  var resets=rows.filter(function(r){return r.reset;}).length;
+  var resets=cntTxt('周期归零');
   var downs=rows.filter(function(r){return r.delta!=null&&r.delta<0&&!r.reset;}).length;
   var avg=withData.length?Math.round(withData.reduce(function(s,r){return s+(r.a.rate||0);},0)/withData.length):0;
-  var done100=rows.filter(function(r){return r.a&&(r.a.rate||0)>=100;}).length;
-  var pendingIn=rows.filter(function(r){return r.e.added&&r.e.added>=DATA.date;}).length;
-  var played0=rows.filter(function(r){return r.a&&r.a.rpc30!=null&&r.a.rpc30>=650&&(r.a.rate||0)===0&&!(r.days!=null&&r.days<=2);}).length;
-  // 2026-10-24：今日零增长 = 未到 100% 但 650 进度与昨天一致（用户最常问的那一类，单列一张卡）
-  var zeroGrow=rows.filter(function(r){return r.a&&r.p&&r.a.rate!=null&&r.p.rate!=null&&r.a.rate<100&&(r.a.rate-r.p.rate)===0;}).length;
-  // 2026-10-25：售后标签计数（与下面行内标签判定保持同一口径）
-  var svcWrong=0,svcCoop=0,svcWait=0;
-  rows.forEach(function(r){
-    var sv=r.sv,hasSvc=!!sv,hasCycle=!hasSvc&&r.a&&r.a.rpc30!=null&&r.a.rpc30>=650&&(r.a.rate||0)===0&&!(r.days!=null&&r.days<=2);
-    if(sv){ if(sv.txt.indexOf('歌曲无效')===0)svcWrong++; else svcCoop++; }
-    if(r.e.song&&!hasSvc&&!hasCycle&&r.days!=null&&r.days>=1&&r.days<=2&&!(r.a&&(r.a.rate||0)>=12))svcWait++;
-  });
+  var noSnap=cntTxt('今日无快照');
+  var zeroGrow=cntTxt('今日零增长');
+  var done100=cntTxt('已达100%');
+  var pendingIn=cntTxt('次日才入池');
+  // 「有播放·650为0」与它的升级版「0%卡住·查周期」同属一类，合并计数
+  var played0=cntTxt('有播放·650为0')+cntTxt('0%卡住');
+  var svcWrong=cntTxt('歌曲无效');
+  var svcCoop=cntTxt('共创歌曲');
+  var svcWait=cntTxt('新号未开刷');
   $('stats').innerHTML=
     '<div class="stat"><b>'+rows.length+'</b><span>账号总数</span></div>'
    +'<div class="stat"><b>'+withData.length+'</b><span>今日有数据</span></div>'
