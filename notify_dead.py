@@ -50,7 +50,7 @@ def main():
         print("[notify-dead] 缺 ASSIGN_PASS，退出")
         return 1
 
-    code, data = call("/api/dead_pending", {"pass": PASS, "wait_h": WAIT_H})
+    code, data = call("/api/dead_pending", {"pass": PASS, "wait_h": WAIT_H, "dry": DRY})
     if code != 200 or not data.get("ok"):
         print(f"[notify-dead] 拉取待发名单失败 HTTP {code}: {data.get('message')}")
         return 1
