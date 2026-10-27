@@ -80,11 +80,65 @@ for name, rows, start in templates:
         print('   L%-5d [%s] %s\n          %s' % (ln_no, level, why, snippet))
 
 # ---- 页面内联 JS 语法（有 node 才查）----
+#
+# 2026-10-27 修复：这里以前直接拿「反引号之间的原始文本」去 node --check，
+# 结果放过了一个致命错误 —— 模板里写 `\'`，原始文本里是合法的转义反斜杠，
+# node --check 认为没问题；但 **JS 引擎会先把 `\'` 反转义成 `'`**，
+# 真正发到浏览器的 HTML 里就是一句不带转义的 `onclick="pickPlan('+x+')"`，
+# 整段 <script> 直接 SyntaxError，控制台按钮全部失灵（点「进入」毫无反应）。
+# 所以必须先按模板字符串的规则做一遍反转义，再交给 node --check。
+JS_SIMPLE = {'n': '\n', 't': '\t', 'r': '\r', 'b': '\b', 'f': '\f', 'v': '\v', '0': '\0'}
+
+
+def js_template_unescape(s):
+    """按 ECMAScript 模板字符串规则消费转义（\\' -> '，\\d -> d，\\n -> 换行 …）。"""
+    out, i, n = [], 0, len(s)
+    while i < n:
+        c = s[i]
+        if c != '\\' or i + 1 >= n:
+            out.append(c)
+            i += 1
+            continue
+        d = s[i + 1]
+        if d == '\\':
+            out.append('\\')
+            i += 2
+        elif d in JS_SIMPLE:
+            out.append(JS_SIMPLE[d])
+            i += 2
+        elif d == 'x' and i + 3 < n:
+            try:
+                out.append(chr(int(s[i + 2:i + 4], 16)))
+                i += 4
+            except ValueError:
+                out.append(d)
+                i += 2
+        elif d == 'u' and i + 2 < n and s[i + 2] == '{':
+            try:
+                j = s.index('}', i)
+                out.append(chr(int(s[i + 3:j], 16)))
+                i = j + 1
+            except (ValueError, IndexError):
+                out.append(d)
+                i += 2
+        elif d == 'u' and i + 5 < n:
+            try:
+                out.append(chr(int(s[i + 2:i + 6], 16)))
+                i += 6
+            except ValueError:
+                out.append(d)
+                i += 2
+        else:                      # \'  \"  \`  \d  \s … —— 一律退化成字符本身
+            out.append(d)
+            i += 2
+    return ''.join(out)
+
+
 node = shutil.which('node')
 if node and templates:
-    print('\n--- 内联 <script> 语法 ---')
+    print('\n--- 内联 <script> 语法（已按模板字符串规则反转义）---')
     for name, rows, _ in templates:
-        html = '\n'.join(b for _, b in rows)
+        html = js_template_unescape('\n'.join(b for _, b in rows))
         for k, s in enumerate(re.findall(r'<script[^>]*>(.*?)</script>', html, re.S)):
             fd, out = tempfile.mkstemp(suffix='.js')
             os.close(fd)
