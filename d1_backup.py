@@ -37,8 +37,9 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36"
 OUT_DIR = os.environ.get("BACKUP_DIR", "backup").strip() or "backup"
 
 # 账号池全字段（含 ck，恢复时必需）
+# 2026-10-27：加 agent / plan（客服 + 套餐）。少备这两列的话，恢复一次客服归属就全没了。
 COLS = ["pool", "uid", "name", "song", "ck", "added", "exp", "no_listen",
-        "email", "updated_at", "note"]
+        "email", "updated_at", "note", "agent", "plan"]
 PAGE = 200          # 单次查询行数，避免 D1 HTTP 响应过大被截断
 SNAP_DAYS = 60      # 快照只备最近 60 天（控制台最多回看 90 天，够用）
 
