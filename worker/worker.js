@@ -3917,7 +3917,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 <div class="head"><h1 class="page-title" id="ptitle">650 任务进阶控制台</h1><p class="page-sub">两群账号每日快照 · 数据由 Actions 播放时段顺带采集（T+1 可见）· CK 不在页面展示</p></div>
 <div class="abox" id="loginBox">
   <h3 style="margin:0 0 10px">输入控制台口令</h3>
-  <p style="margin:0 0 8px;color:#888;font-size:13px;line-height:1.5">账号固定 <b>xx1031</b>，只需填口令。<b>这台设备记住 30 天</b>，期间打开本站直接进；想立刻清掉点右上「退出」。用 CK助手点「进阶控制台」会自动填好、不用手输；想重输口令：按住 Ctrl 再点那个按钮。</p>
+  <p style="margin:0 0 8px;color:#888;font-size:13px;line-height:1.5">账号固定 <b>xx1031</b>，只需填口令。<b>本机不保存口令，每次打开这一页都要重新输入</b>。从「网易云CK助手」或手机 App 点「进阶控制台」进来时，口令由软件带过来，不用在这里再输一遍。</p>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
     <input id="lu" value="xx1031" readonly title="账号固定 xx1031，不用改" style="width:92px;flex:0 0 92px;background:#f5f5f5;color:#999;text-align:center">
     <input id="lp" type="password" placeholder="控制台口令" style="flex:1;min-width:160px">
@@ -4024,21 +4024,22 @@ function $(id){return document.getElementById(id);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function todayBJ(){var d=new Date(Date.now()+8*3600*1000);return d.toISOString().slice(0,10);}
 function api(ep,body){return fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});});}
-// 2026-10-27：口令改存 localStorage（30 天），关浏览器再开也不用重输。
-// 以前用 sessionStorage，关掉标签页就没了 —— 用户反馈「以前输一次下次不用输」现在失效。
-// 「退出」按钮会清掉；换口令后旧 token 登录失败，会自动回落到登录框。
-var TOK_KEY='consToken', TOK_DAYS=30;
-function save(t){try{localStorage.setItem(TOK_KEY,JSON.stringify({t:t,exp:Date.now()+TOK_DAYS*864e5}));}catch(e){}}
-function load(){
-  try{
-    var raw=localStorage.getItem(TOK_KEY);
-    if(!raw)return null;
-    var o=JSON.parse(raw);
-    if(!o||!o.t||!o.exp||o.exp<Date.now()){localStorage.removeItem(TOK_KEY);return null;}
-    return o.t;
-  }catch(e){return null;}
+// 2026-10-27 二次改（用户要求：满权限和只读，每次都要输入）：控制台口令一律不记忆。
+// 起因：LOCALSTORAGE 里那个 30 天 token，把 EXE/APK 费劲做到的"满权限口令不落盘"又存回去了
+// —— 点开 /console 直接进，看着像没设口令。现在 TOKEN 只活在本页内存里，刷新或重开就没了。
+// 历史版本存过的残留（含口令明文）在 load() 里顺手删掉，升级后第一次打开自动清干净。
+var TOK_KEY='consToken';
+function save(t){
+  TOKEN=t;                                            // 只在内存里，本页后续 api 调用够用
+  try{localStorage.removeItem(TOK_KEY);}catch(e){}    // 清历史残留，绝不写盘
+  try{sessionStorage.removeItem(TOK_KEY);}catch(e){}
 }
-function dropTok(){try{localStorage.removeItem(TOK_KEY);}catch(e){}try{sessionStorage.removeItem('consToken');}catch(e){}}
+function load(){
+  try{localStorage.removeItem(TOK_KEY);}catch(e){}    // 老版本存的 30 天 token 就地删除
+  try{sessionStorage.removeItem(TOK_KEY);}catch(e){}
+  return null;                                        // 永不恢复 → 每次都显示登录框
+}
+function dropTok(){try{localStorage.removeItem(TOK_KEY);}catch(e){}try{sessionStorage.removeItem(TOK_KEY);}catch(e){}}
 function login(){
   var u='xx1031',p=$('lp').value;   // 2026-10-25：账号固定，登录框只留口令一个输入框
   if(!u||!p){$('lm').textContent='请输入账号和密码';$('lm').className='msg err';return;}
