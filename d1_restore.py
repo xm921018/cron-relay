@@ -28,8 +28,8 @@ D1_UUID = (os.environ.get("D1_UUID", "").strip() or "54f742fc-5f56-4723-a7a0-a83
 TOK = (os.environ.get("CF_TOKEN", "") or "").strip()
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36"
 COLS = ["pool", "uid", "name", "song", "ck", "added", "exp", "no_listen",
-        "email", "updated_at", "note"]
-BATCH = 8   # 8 行 × 11 列 = 88 个绑定参数，低于 D1 单查询 100 参数上限
+        "email", "updated_at", "note", "agent", "plan"]
+BATCH = 7   # 7 行 × 13 列 = 91 个绑定参数，低于 D1 单查询 100 参数上限
 
 
 def api(sql, params=None):
