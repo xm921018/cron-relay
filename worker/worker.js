@@ -3092,7 +3092,13 @@ async function handle(request) {
       const role = await consoleRole(body);
       if (!role) return json({ message: '账号或密码错误' }, 403, CORS);
       const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : beijingDate();
-      const prevDate = dateMinus1(date);
+      // 2026-10-27：支持「日期范围」—— 控制台日期框改成「起始 ~ 结束」两个，
+      // body.date 仍是结束日（"今天"这一侧，plan/runs/streak/删号等一律按它算），
+      // body.prevDate 由前端给起始日；不给就退回「结束日的前一天」（等于原来的单日视图）。
+      // 只影响 snap.cur / snap.prev 这两张快照表取哪天，其余字段口径完全不变。
+      const prevDate = /^\d{4}-\d{2}-\d{2}$/.test(body.prevDate || '')
+        ? (body.prevDate < date ? body.prevDate : dateMinus1(date))
+        : dateMinus1(date);
       // 2026-10-22：控制台是高频只读接口，原来每刷新一次就跑 pruneExpired()（全量重建 +
       // 可能删键 + 写 204KB master + 推 12 个 Secret）。改为直接读 D1 全表（一条 SELECT）。
       // 过期号在页面上仍会按 exp 字段标红，真正的清理交给管理后台/resync。
@@ -3798,15 +3804,10 @@ button.gray{background:#888}button.warn{background:#a32d2d}button:disabled{opaci
 .ro{display:inline-block;background:#fdf3e3;color:#b06a00;border-radius:8px;padding:2px 9px;font-size:11px;margin-left:6px;vertical-align:middle;font-weight:400}
 .tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
 .tools input{min-width:130px}.tools input#q{flex:1;min-width:160px}
-/* 2026-10-27：入池日期范围筛选（两个日期输入框 + 清除）。有筛选时整组变绿，一眼看出不是全部号。 */
-.drng{display:inline-flex;align-items:center;gap:4px;background:#f5f6f8;border:1px solid #e8eaee;border-radius:8px;padding:2px 6px}
-.drng i{font-style:normal;font-size:12px;color:#666}
-.drng em{font-style:normal;color:#aaa;font-size:12px}
-.drng input{border:1px solid #ddd;border-radius:6px;padding:5px 6px;font-size:12.5px;min-width:118px;background:#fff}
-.drng .dx{display:none;cursor:pointer;color:#999;font-size:15px;padding:0 4px;line-height:1;user-select:none}
-.drng .dx:hover{color:#a32d2d}
-.drng.on{background:#f2f7ea;border-color:#cfe0b4}
-.drng.on .dx{display:inline}
+/* 2026-10-27 二次改（用户要求）：不要单独的「入池范围」控件，
+   就在原来那个单日期后面再放一个日期，两个框连起来当一个日期范围用。 */
+.dr{display:inline-flex;align-items:center;gap:3px}
+.dr em{font-style:normal;color:#aab4c0;font-size:12px}
 .tab{padding:8px 14px;border-radius:8px;background:#eee;color:#555;cursor:pointer;font-size:13px}
 .tab.on{background:#3b6d11;color:#fff}
 .twrap{overflow:auto;max-height:calc(100vh - 170px);border:1px solid #eee;border-radius:10px}
@@ -3866,9 +3867,9 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   .pl b{font-size:14px}
   .tools{gap:6px;margin-bottom:8px}
   .tools input,.tools select,.tools button,.mini{padding:8px 10px;font-size:12.5px}
-  /* 手机端：入池范围整组单占一行，两个日期框平分宽度，否则日期框各自换行会顶掉半屏 */
-  .drng{flex:1 1 100%;justify-content:space-between;padding:3px 5px}
-  .drng input{flex:1;min-width:0;padding:7px 4px;font-size:12px}
+  /* 手机端：两个日期框平分一行，否则各自换行会顶掉半屏 */
+  .dr{width:100%;justify-content:space-between}
+  .dr input{flex:1;min-width:0;padding:7px 4px;font-size:12px}
   .runbar{gap:6px;margin-bottom:10px}
   .rb{min-width:0;flex:1 1 100%;padding:7px 10px;font-size:11.5px}
   .twrap{border:0;border-radius:0;max-height:none!important;height:auto!important;overflow:visible;background:transparent}
@@ -3945,8 +3946,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <span class="tab on" data-p="all">全部</span><span class="tab" data-p="hz">主群</span><span class="tab" data-p="dz">定制群</span>
     <select id="fagent" title="按客服筛选（顶部套餐汇总、所有统计都跟着变）"><option value="">客服：全部</option></select>
     <select id="fplan" title="按套餐筛选"><option value="">套餐：全部</option></select>
-    <input type="date" id="date" title="快照日期：看的是这一天的 650 进度（跟右边的「入池」范围筛选互不影响）">
-    <span class="drng" id="drng" title="按「入池日期」筛选：只看这段时间登记进来的号。只填一端也行（如只填左边=这天及以后），两端都空=全部。清空点右边的 ×"><i>入池</i><input type="date" id="dFrom" title="入池起始日（含）"><em>~</em><input type="date" id="dTo" title="入池结束日（含）"><span class="dx" id="dClear" title="清除入池日期范围">×</span></span>
+    <span class="dr" title="日期范围：左边起始日、右边结束日（含）。两列 650 进度分别是这两天的快照，中间那列是两者之差。只填一个也行：只填左边 = 从这天到今天，只填右边 = 拿它跟它前一天比。"><input type="date" id="date" title="起始日（含）"><em>~</em><input type="date" id="dateTo" title="结束日（含）"></span>
     <input id="q" placeholder="搜索：账号 / 邮箱 / UID / 歌曲ID / 客服">
     <select id="sort"><option value="default">排序：默认</option><option value="delta">排序：日涨幅↓</option><option value="rate">排序：今日进度↓</option></select>
     <button class="mini" id="btnCsv">导出CSV</button>
@@ -3955,7 +3955,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <button class="mini gray" id="btnOut">退出</button>
   </div>
   <div class="twrap"><table><thead><tr>
-    <th>#</th><th>池</th><th>账号</th><th title="这条登记是谁录的（客服标签，登记前必须在 APK/EXE 里选）">客服</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记，按 已发x/4 显示：30天内发布图文笔记天数≥4，4/4=已完成）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th title="登记时买的套餐（1年/2年/永久）。顶部「套餐汇总」按这一列统计，不按剩余天数算">套餐</th><th>标记</th><th>操作</th>
+    <th>#</th><th>池</th><th>账号</th><th title="这条登记是谁录的（客服标签，登记前必须在 APK/EXE 里选）">客服</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th id="thA" title="起始日快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th id="thB" title="结束日快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th id="thD" title="结束日650进度 - 起始日650进度；红色=涨，绿色=跌，0=这段时间没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记，按 已发x/4 显示：30天内发布图文笔记天数≥4，4/4=已完成）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th title="登记时买的套餐（1年/2年/永久）。顶部「套餐汇总」按这一列统计，不按剩余天数算">套餐</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
   <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary>
   <div class="muted" style="margin:6px 0 8px">原因：<b>手动删除</b>＝你在控制台/号池工具点的删除；<b>Cookie失效</b>＝播放前验活自动判死；<b>到期清理</b>＝账号有效期到了自动移除。已回池（迁移到另一群或当天重登）的号不算删号。<br>通知：<b>已通知</b>＝确认发出；<b>已回池·不发</b>＝号还在跑；<b>无邮箱·不发</b>＝没登记邮箱；<b>待判·12h</b>＝删后满 12 小时才判定该不该发；<b>自动判死·run.py 发信</b>＝早期记录，发信由播放任务临时触发，发没发事后查不到。</div><div id="deadList"></div></details>
@@ -4036,6 +4036,16 @@ var ROLE='ro', AGENTF='', PLANF='', AGENTS=[], PLANS=[];
 function $(id){return document.getElementById(id);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function todayBJ(){var d=new Date(Date.now()+8*3600*1000);return d.toISOString().slice(0,10);}
+// 2026-10-27：日期范围要算「前一天」，不能再用本地时区做减法（会跨时区错一天），
+// 统一按 UTC 拼日期再减，结果仍是 yyyy-mm-dd。
+function dMinus(day,n){
+  if(!day)return '';
+  var p=String(day).split('-');
+  if(p.length!==3)return '';
+  var d=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
+  d.setUTCDate(d.getUTCDate()-(n||1));
+  return d.toISOString().slice(0,10);
+}
 function api(ep,body){return fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});});}
 // 2026-10-27 二次改（用户要求：满权限和只读，每次都要输入）：控制台口令一律不记忆。
 // 起因：LOCALSTORAGE 里那个 30 天 token，把 EXE/APK 费劲做到的"满权限口令不落盘"又存回去了
@@ -4068,13 +4078,12 @@ $('lp').onkeydown=function(e){if(e.key==='Enter')login();};
 $('lu').onkeydown=function(e){if(e.key==='Enter')$('lp').focus();};
 $('btnOut').onclick=function(){dropTok();location.reload();};
 $('btnRefresh').onclick=loadData;
-$('date').onchange=loadData;
+$('date').onchange=loadData;$('dateTo').onchange=loadData;
 $('q').oninput=render;$('sort').onchange=render;
 $('fagent').onchange=function(){AGENTF=this.value;render();};
 $('fplan').onchange=function(){PLANF=this.value;render();};
-// 2026-10-27：入池日期范围筛选。纯前端过滤（数据本来就在这一页里），改日期不重新请求接口。
-$('dFrom').onchange=render;$('dTo').onchange=render;
-$('dClear').onclick=function(){$('dFrom').value='';$('dTo').value='';render();};
+// 2026-10-27 二次改：入池范围控件已删（用户不要）。两个日期框都要重新拉数据，
+// 因为起止日直接决定取哪两天的快照，纯前端过滤做不到。
 // 2026-10-24：表格区高度自适应视口剩余空间 → 滚动发生在 .twrap 内部，配合 .twrap th 的 sticky 实现表头冻结
 // 2026-10-26 修（手机端排版错乱）：手机宽度下表格已改成卡片流、整页滚动，这里绝不能再锁高度。
 //   原来这里无条件写 w.style.maxHeight，手机上 innerHeight 减掉页头/统计/工具条后只剩 100 多 px，
@@ -4138,14 +4147,31 @@ function applyRole(role){
     }
   }
 }
+// 2026-10-27：日期范围 = 顶部的两个日期框（左边起始、右边结束）。规则：
+//   · 两个都空 → 昨天 ~ 今天（跟改动前的单日视图完全一样）
+//   · 只填左边 → 从这天到今天
+//   · 只填右边 → 拿它跟它前一天比（等于「单看这一天」）
+//   · 填反了自动对调；两边填成同一天也按「该日 vs 前一天」算，避免全员 0 的白看
+// 归一化结果直接写回两个输入框，用户能看到服务器究竟按哪两天算。
+function rangeOf(){
+  var a=$('date').value||'',b=$('dateTo').value||'',t=todayBJ();
+  if(!a&&!b){b=t;a=dMinus(t,1);}
+  else if(a&&!b){b=t;}
+  else if(!a&&b){a=dMinus(b,1);}
+  if(a>b){var x=a;a=b;b=x;}
+  if(a===b)a=dMinus(b,1);
+  $('date').value=a;$('dateTo').value=b;
+  return {from:a,to:b};
+}
 function loadData(){
   var t=JSON.parse(TOKEN||'{}');
+  var rg=rangeOf();
   $('btnRefresh').disabled=true;
-  api('/api/console/data',{user:t.user,pass:t.pass,date:$('date').value||todayBJ()}).then(function(o){
+  api('/api/console/data',{user:t.user,pass:t.pass,date:rg.to,prevDate:rg.from}).then(function(o){
     $('btnRefresh').disabled=false;
     if(!o.ok){$('lm').textContent=o.d.message||'请重新登录';$('lm').className='msg err';$('loginBox').hidden=false;$('mainBox').hidden=true;return;}
     DATA=o.d;
-    $('date').value=DATA.date;
+    $('date').value=DATA.prevDate||rg.from;$('dateTo').value=DATA.date||rg.to;
     applyCfg(DATA.cfg);           // 客服/套餐下拉 + 汇总口径
     applyRole(DATA.role);         // 满权限 / 只读（服务端 data 里带，刷新一次就恢复正确权限）
     render();fitTable();
@@ -4292,30 +4318,38 @@ function computeMarks(r, susSet){
   if(!a&&e.song&&!(r.days!=null&&r.days<=2))add('b-gray','采集缺失','今天这一轮没采到该号快照（接口超时或号没跑），偶尔一次不用管；连续几天要查');
   return { html: html, text: txt.join(' ') };
 }
+// 2026-10-27 二次改：两列进度跟着日期范围换名字。跨度正好 1 天（就是原来「昨天→今天」）保持
+// 原来的「昨日 / 今日 / 较昨日」；跨度大于 1 天改成「起始 / 结束 / 区间变化」——
+// 否则拿 10-01 和 10-27 比还叫什么「较昨日」，标题就在撒谎。
+var LB_A='昨日650',LB_B='今日650',LB_D='较昨日';
+function rangeLabels(){
+  var a=(DATA&&DATA.prevDate)||'',b=(DATA&&DATA.date)||'';
+  var one=(a&&b)?(a===dMinus(b,1)):true;
+  LB_A=one?'昨日650':'起始650';
+  LB_B=one?'今日650':'结束650';
+  LB_D=one?'较昨日':'区间变化';
+  var thA=$('thA'),thB=$('thB'),thD=$('thD');
+  if(thA){thA.innerHTML=one?'昨日<br>650进度':'起始<br>650进度';
+    thA.title='起始日 '+(a||'')+' 快照里的 650 任务完成度（近30日有效播放，100%=已达标）';}
+  if(thB){thB.innerHTML=one?'今日<br>650进度':'结束<br>650进度';
+    thB.title='结束日 '+(b||'')+' 快照里的 650 任务完成度（近30日有效播放，100%=已达标）';}
+  if(thD){thD.textContent=LB_D;
+    thD.title=(a&&b?(a+' → '+b+'，'):'')+'结束日650进度 - 起始日650进度；红色=涨，绿色=跌，0=这段时间没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）';}
+  return one;
+}
 function render(){
   if(!DATA)return;
   var susSet={};(DATA.suspects||[]).forEach(function(s){susSet[String(s.uid)]=1;});
   renderRunbar();
+  rangeLabels();                 // 必须在 buildRows 之前：行内 data-l 列名要用 LB_*
   var all=buildRows();
   all.forEach(function(r){var m=computeMarks(r,susSet);r.markHtml=m.html;r.markText=m.text;});
-  // 2026-10-27：入池日期范围。added 形如 2026-10-27，统一截前 10 位后按字符串比大小（yyyy-mm-dd 正好可比）。
-  // 只填一端就只卡一端；两端填反了自动对调，避免用户以为筛出 0 个是 bug。
-  var dFrom=$('dFrom').value||'',dTo=$('dTo').value||'';
-  if(dFrom&&dTo&&dFrom>dTo){var dTmp=dFrom;dFrom=dTo;dTo=dTmp;$('dFrom').value=dFrom;$('dTo').value=dTo;}
-  var drngEl=$('drng');if(drngEl)drngEl.className='drng'+((dFrom||dTo)?' on':'');
   var q=($('q').value||'').trim().toLowerCase();
   var rows=all.filter(function(r){
     if(POOLF!=='all'&&r.pool!==POOLF)return false;
     // 2026-10-27：客服 / 套餐 两个下拉筛选（顶部所有统计都跟着它变）
     if(AGENTF&&String(r.e.agent||'')!==AGENTF)return false;
     if(PLANF&&String(r.e.plan||'')!==PLANF)return false;
-    // 2026-10-27：入池日期范围（没登记入池日的老号，一旦启用这个筛选就不显示 —— 它不落在任何区间内）
-    if(dFrom||dTo){
-      var ad=String(r.e.added||'').slice(0,10);
-      if(!ad)return false;
-      if(dFrom&&ad<dFrom)return false;
-      if(dTo&&ad>dTo)return false;
-    }
     if(!q)return true;
     var e=r.e;
     // 2026-10-25：搜索也能命中标记文本（如搜「绑错歌」「共创」「未开刷」直接筛出同类号）
@@ -4437,9 +4471,9 @@ function render(){
       +'<td class="num" data-l="UID">'+esc(e.uid)+'</td>'
       +'<td class="num" data-l="歌曲">'+song+'</td>'
       +'<td data-l="时长">'+durCell+'</td>'
-      +'<td class="num" data-l="昨日650">'+ratePrev+'</td>'
-      +'<td class="num" data-l="今日650" style="font-weight:600">'+rateNow+(a&&a.at?'<div class="snap-at">采于 '+bjTime(a.at)+'</div>':'')+'</td>'
-      +'<td data-l="较昨日">'+dCell+'</td>'
+      +'<td class="num" data-l="'+LB_A+'">'+ratePrev+'</td>'
+      +'<td class="num" data-l="'+LB_B+'" style="font-weight:600">'+rateNow+(a&&a.at?'<div class="snap-at">采于 '+bjTime(a.at)+'</div>':'')+'</td>'
+      +'<td data-l="'+LB_D+'">'+dCell+'</td>'
       +'<td class="num" data-l="近30日播放">'+(a&&a.rpc30!=null?a.rpc30:'—')+'</td>'
       +'<td data-l="其他任务">'+misCell+'</td>'
       +'<td class="num" data-l="入池">'+esc(e.added)+'</td>'
@@ -4605,7 +4639,11 @@ $('cSave').onclick=function(){
   }).catch(function(){$('cSave').disabled=false;$('cm').textContent='网络错误';$('cm').className='msg err';});
 };
 $('btnCsv').onclick=function(){
-  var rows=[['池','账号','客服','套餐','UID','歌曲ID','时长(秒)','昨进度','今进度','日环比','近30日播放','入池','有效期','邮箱','标记']];
+  var rows=[[ '池','账号','客服','套餐','UID','歌曲ID','时长(秒)',
+    (LB_A==='昨日650'?'昨进度':'起始日进度'),
+    (LB_B==='今日650'?'今进度':'结束日进度'),
+    (LB_D==='较昨日'?'日环比':'区间变化'),
+    '近30日播放','入池','有效期','邮箱','标记']];
   buildRows().forEach(function(r){
     var e=r.e;
     var dur=(DATA.durs||{})[r.pool+'|'+e.uid]||(DATA.durs||{})[e.uid]||((r.a&&r.a.dur)||'');
@@ -4620,7 +4658,9 @@ $('btnCsv').onclick=function(){
   document.body.appendChild(a);a.click();document.body.removeChild(a);
 };
 (function(){
-  $('date').value=todayBJ();
+  // 2026-10-27 二次改：默认「昨天 ~ 今天」= 跟改动前的单日视图一模一样（列名也还是昨日/今日）。
+  $('dateTo').value=todayBJ();
+  $('date').value=dMinus($('dateTo').value,1);
   // 2026-10-25：#pw= 免密改成「可重复触发」。旧版只在脚本初次执行时读一次 hash，而 CK助手再点
   // 「进阶控制台」时浏览器通常已经开着 /console 标签 —— 那只是同页内 hash 变化，脚本不会重跑，
   // 免密不执行 → 刚在 EXE 输过口令，网页又弹登录框（等于要输两遍）。现在抽成函数并监听 hashchange。
