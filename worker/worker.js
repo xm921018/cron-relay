@@ -3915,7 +3915,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 <div class="head"><h1 class="page-title" id="ptitle">650 任务进阶控制台</h1><p class="page-sub">两群账号每日快照 · 数据由 Actions 播放时段顺带采集（T+1 可见）· CK 不在页面展示</p></div>
 <div class="abox" id="loginBox">
   <h3 style="margin:0 0 10px">输入控制台口令</h3>
-  <p style="margin:0 0 8px;color:#888;font-size:13px;line-height:1.5">账号固定 <b>xx1031</b>，只需填口令。用 CK助手点「进阶控制台」会自动填好、不用手输；想重输口令：按住 Ctrl 再点那个按钮。</p>
+  <p style="margin:0 0 8px;color:#888;font-size:13px;line-height:1.5">账号固定 <b>xx1031</b>，只需填口令。<b>这台设备记住 30 天</b>，期间打开本站直接进；想立刻清掉点右上「退出」。用 CK助手点「进阶控制台」会自动填好、不用手输；想重输口令：按住 Ctrl 再点那个按钮。</p>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
     <input id="lu" value="xx1031" readonly title="账号固定 xx1031，不用改" style="width:92px;flex:0 0 92px;background:#f5f5f5;color:#999;text-align:center">
     <input id="lp" type="password" placeholder="控制台口令" style="flex:1;min-width:160px">
@@ -4022,8 +4022,21 @@ function $(id){return document.getElementById(id);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function todayBJ(){var d=new Date(Date.now()+8*3600*1000);return d.toISOString().slice(0,10);}
 function api(ep,body){return fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});});}
-function save(t){try{sessionStorage.setItem('consToken',t);}catch(e){}}
-function load(){try{return sessionStorage.getItem('consToken');}catch(e){return null;}}
+// 2026-10-27：口令改存 localStorage（30 天），关浏览器再开也不用重输。
+// 以前用 sessionStorage，关掉标签页就没了 —— 用户反馈「以前输一次下次不用输」现在失效。
+// 「退出」按钮会清掉；换口令后旧 token 登录失败，会自动回落到登录框。
+var TOK_KEY='consToken', TOK_DAYS=30;
+function save(t){try{localStorage.setItem(TOK_KEY,JSON.stringify({t:t,exp:Date.now()+TOK_DAYS*864e5}));}catch(e){}}
+function load(){
+  try{
+    var raw=localStorage.getItem(TOK_KEY);
+    if(!raw)return null;
+    var o=JSON.parse(raw);
+    if(!o||!o.t||!o.exp||o.exp<Date.now()){localStorage.removeItem(TOK_KEY);return null;}
+    return o.t;
+  }catch(e){return null;}
+}
+function dropTok(){try{localStorage.removeItem(TOK_KEY);}catch(e){}try{sessionStorage.removeItem('consToken');}catch(e){}}
 function login(){
   var u='xx1031',p=$('lp').value;   // 2026-10-25：账号固定，登录框只留口令一个输入框
   if(!u||!p){$('lm').textContent='请输入账号和密码';$('lm').className='msg err';return;}
@@ -4037,7 +4050,7 @@ function login(){
 $('lbtn').onclick=login;
 $('lp').onkeydown=function(e){if(e.key==='Enter')login();};
 $('lu').onkeydown=function(e){if(e.key==='Enter')$('lp').focus();};
-$('btnOut').onclick=function(){try{sessionStorage.removeItem('consToken');}catch(e){}location.reload();};
+$('btnOut').onclick=function(){dropTok();location.reload();};
 $('btnRefresh').onclick=loadData;
 $('date').onchange=loadData;
 $('q').oninput=render;$('sort').onchange=render;
@@ -4328,8 +4341,7 @@ function render(){
   var ph='';
   PLANS.forEach(function(p){
     var n=planCnt[p.label]||0;
-    ph+='<div class="pl" title="登记时买的是「'+esc(p.label)+'」的号：'+n+' 个（点这里可按套餐筛选）"'
-      +' onclick="pickPlan(\''+esc(p.label)+'\')" style="cursor:pointer">'+esc(p.label)+'<b>'+n+'</b></div>';
+    ph+='<div class="pl" data-plan="'+esc(p.label)+'" title="登记时买的是「'+esc(p.label)+'」的号：'+n+' 个（点这里可按套餐筛选）" style="cursor:pointer">'+esc(p.label)+'<b>'+n+'</b></div>';
   });
   // 配置里没有、但库里真有的历史套餐名（比如以前手输的），照样列出来，绝不吞数据
   Object.keys(planCnt).forEach(function(k){
@@ -4340,6 +4352,25 @@ function render(){
   var noPlan=planCnt['']||0;
   if(noPlan)ph+='<div class="pl muted" title="登记时没有套餐信息的号（多半是加字段之前登记的老号）">未标注<b>'+noPlan+'</b></div>';
   $('plans').innerHTML=ph||'';
+  // 套餐条点击 = 按该档筛选。用 data-plan + 事件委托，不写内联 onclick ——
+  // 这段 JS 本身住在模板字符串里，内联写法要跨两层转义，10-27 就因为这个把整段脚本写崩过。
+  $('plans').onclick=function(ev){
+    var el=ev.target;
+    while(el&&el!==this&&!(el.getAttribute&&el.getAttribute('data-plan')))el=el.parentNode;
+    if(!el||el===this||!el.getAttribute)return;
+    pickPlan(el.getAttribute('data-plan'));
+  };
+  // 2026-10-27：套餐和有效期是**两个字段**——套餐（plan）只用于统计口径，真正卡播放/互听时长的是有效期（exp）。
+  // 手动改有效期不会自动改套餐，所以两边可能对不上（比如选了「1年」又把有效期改到 730 天）。
+  // 这里只在渲染时标一个「≠」提示，不改任何数据、不拦任何操作。
+  function planDaysOf(label){for(var i=0;i<PLANS.length;i++){if(PLANS[i].label===label)return PLANS[i].days;}return null;}
+  function actualDaysOf(e){
+    var x=String(e.exp||'').trim();
+    if(!x||x==='forever'||x==='永久')return 0;                 // 0 = 永久
+    var t1=Date.parse(x.slice(0,10)+'T00:00:00Z'),t2=Date.parse(String(e.added||'').slice(0,10)+'T00:00:00Z');
+    if(isNaN(t1)||isNaN(t2))return null;
+    return Math.round((t1-t2)/864e5);
+  }
   var h='';
   rows.forEach(function(r,i){
     var e=r.e,a=r.a;
@@ -4356,7 +4387,15 @@ function render(){
     var marks=r.markHtml||'';   // 2026-10-25：标记已在 render 开头由 computeMarks 算好（搜索框也能命中）
     // 2026-10-27：客服 / 套餐两列；data-l 提供手机端卡片标签（列顺序变了标签不会跟着错）。
     var agCell=e.agent?'<span class="badge b-gray" title="这条登记是 '+esc(e.agent)+' 录的">'+esc(e.agent)+'</span>':'<span style="color:#ccc">—</span>';
-    var plCell=e.plan?esc(e.plan):'<span style="color:#ccc">未标注</span>';
+    var plCell='';
+    if(!e.plan){plCell='<span style="color:#ccc">未标注</span>';}
+    else{
+      plCell=esc(e.plan);
+      var _pd=planDaysOf(e.plan),_ad=actualDaysOf(e);
+      if(_pd!==null&&_ad!==null&&Math.abs(_ad-_pd)>10){
+        plCell+='<span class="badge b-yellow" style="margin-left:4px" title="套餐记的是「'+esc(e.plan)+'」（'+(_pd?(_pd+' 天'):'永久')+'），但按入池日算有效期实际是 '+(_ad?(_ad+' 天'):'永久')+'。两个字段互相独立：套餐只影响统计口径，卡时长的是有效期；改一边不会自动改另一边。">≠</span>';
+      }
+    }
     var opCell=(ROLE==='full')
       ? '<button class="mini" style="padding:4px 10px;font-size:12px" data-pool="'+r.pool+'" data-uid="'+esc(e.uid)+'" data-name="'+esc(e.name)+'">编辑</button>'
       : '<span style="color:#c9ced6;font-size:12px">只读</span>';
