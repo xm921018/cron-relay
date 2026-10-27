@@ -1584,6 +1584,93 @@ function parseExpInput(x) {
   if (/^\d{1,4}$/.test(s)) return { ok: true, exp: beijingDatePlus(parseInt(s, 10)) };
   return { ok: false };
 }
+
+// ====================================================================
+// 客服标签 / 套餐档位（2026-10-27 新增）
+// 背景：APK 与 EXE 都是客服用来登记的，人一多就分不清谁登记的；而「客服名字写死在软件里」
+//       会导致每次人员变动都要重新打包 + 所有人重装。所以名单放在服务端，客户端每次登记前拉一份。
+// 存放：D1 kv_misc 的 k='reg_cfg'（两群共用同一个 D1 库 → 只维护一份，两群自动一致）；
+//       KV 同名键 REG_CFG 只作兜底镜像（D1 挂了才读）。
+// 口径：accounts.agent 存客服名字原文，accounts.plan 存套餐「显示名」（1年/2年/永久），
+//       统计按买的套餐算，不按剩余天数算（exp 可改可续，会漂）。
+// ====================================================================
+const REG_CFG_KEY = 'reg_cfg';
+const REG_CFG_KV = 'REG_CFG';
+const REG_CFG_DEFAULT = {
+  agents: ['徐'],
+  plans: [
+    { key: '1y', label: '1年', days: 365 },
+    { key: '2y', label: '2年', days: 730 },
+    { key: 'forever', label: '永久', days: 0 },
+  ],
+};
+
+// 客服名：去空白/控制字符/引号，最长 16 字。不校验是否在名单内 ——
+// 名单随时会改，旧客户端可能还在提交已删掉的名字，直接拒绝会让登记全线失败。
+function normAgent(x) {
+  return String(x == null ? '' : x).replace(/[\u0000-\u001f\u007f"'<>]/g, '').trim().slice(0, 16);
+}
+
+function normRegCfg(o) {
+  const out = { agents: [], plans: [] };
+  const src = (o && typeof o === 'object') ? o : {};
+  for (const a of (Array.isArray(src.agents) ? src.agents : [])) {
+    const v = normAgent(a);
+    if (v && !out.agents.includes(v)) out.agents.push(v);
+  }
+  for (const p of (Array.isArray(src.plans) ? src.plans : [])) {
+    if (!p || typeof p !== 'object') continue;
+    const label = String(p.label || '').trim().slice(0, 8);
+    if (!label) continue;
+    const days = Math.max(0, Math.min(36500, parseInt(p.days, 10) || 0));
+    const key = String(p.key || label).trim().slice(0, 16) || label;
+    if (out.plans.some(x => x.key === key)) continue;
+    out.plans.push({ key: key, label: label, days: days });
+  }
+  if (!out.agents.length) out.agents = REG_CFG_DEFAULT.agents.slice();
+  if (!out.plans.length) out.plans = REG_CFG_DEFAULT.plans.map(p => ({ key: p.key, label: p.label, days: p.days }));
+  return out;
+}
+
+// 读配置：D1 → KV → 内置默认。任何异常都不抛，绝不阻塞登记。
+async function regCfg() {
+  let raw = null;
+  if (d1ok()) {
+    try {
+      const rows = await d1All('SELECT v FROM kv_misc WHERE k=?', [REG_CFG_KEY]);
+      if (rows && rows.length) raw = rows[0].v;
+    } catch (e) { console.error('读 reg_cfg(D1) 失败:', e && e.message); }
+  }
+  if (!raw) {
+    try { raw = await POOL.get(REG_CFG_KV); } catch (e) {}
+  }
+  let o = null;
+  try { o = raw ? JSON.parse(raw) : null; } catch (e) { o = null; }
+  return normRegCfg(o);
+}
+
+// 写配置：控制台「客服名单」用（只读口令进不来，见 /api/console/cfg）。D1 为主，KV 兜底镜像。
+async function saveRegCfg(o) {
+  const cfgN = normRegCfg(o);
+  const s = JSON.stringify(cfgN);
+  let d1 = false;
+  if (d1ok()) {
+    d1 = await d1Run('INSERT INTO kv_misc (k,v,updated_at) VALUES (?,?,?) ' +
+      'ON CONFLICT(k) DO UPDATE SET v=excluded.v, updated_at=excluded.updated_at',
+      [REG_CFG_KEY, s, new Date().toISOString()]);
+  }
+  try { await POOL.put(REG_CFG_KV, s); } catch (e) {}
+  return { ok: !!d1, cfg: cfgN };
+}
+
+// 把客户端传来的「套餐」（key 或显示名都认）解析成 {key,label,exp}
+function planOf(cfg, x) {
+  const s = String(x == null ? '' : x).trim();
+  if (!s) return null;
+  const p = (cfg.plans || []).find(it => it.key === s || it.label === s);
+  if (!p) return null;
+  return { key: p.key, label: p.label, exp: (p.days > 0 ? beijingDatePlus(p.days) : 'forever') };
+}
 // 到期账号清理：删独立键 + 记墓碑 + 刷 master + 回推 GitHub Secrets（只在有过期时才写）
 async function pruneExpired() {
   const master = await mergePool();
@@ -1975,12 +2062,17 @@ async function d1Upsert(e) {
     uid = 'name:' + String(e.name);
   }
   return d1Run(
-    'INSERT INTO accounts (pool,uid,name,song,ck,added,exp,no_listen,email,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) ' +
+    'INSERT INTO accounts (pool,uid,name,song,ck,added,exp,no_listen,email,updated_at,agent,plan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ' +
     'ON CONFLICT(pool,uid) DO UPDATE SET name=excluded.name, song=excluded.song, ck=excluded.ck, ' +
     'added=excluded.added, exp=excluded.exp, no_listen=excluded.no_listen, email=excluded.email, ' +
-    'updated_at=excluded.updated_at',
+    'updated_at=excluded.updated_at, ' +
+    // 2026-10-27：agent/plan 用「新值非空才覆盖」——/api/d1_sync 之类从 KV 老数据回灌时，
+    // KV 里没有这两列，无脑覆盖会把 505 个存量号的客服归属一次清空。
+    'agent=CASE WHEN excluded.agent<>\'\' THEN excluded.agent ELSE accounts.agent END, ' +
+    'plan=CASE WHEN excluded.plan<>\'\' THEN excluded.plan ELSE accounts.plan END',
     [POOL_NAME, uid, String(e.name || ''), String(e.song || ''), String(e.ck || ''), String(e.added || ''),
-     String(e.exp || ''), e.noListen ? 1 : 0, String(e.email || ''), new Date().toISOString()]
+     String(e.exp || ''), e.noListen ? 1 : 0, String(e.email || ''), new Date().toISOString(),
+     String(e.agent || ''), String(e.plan || '')]
   );
 }
 async function d1Delete(e) {
@@ -1998,7 +2090,7 @@ async function d1Delete(e) {
 // 设计原则：D1 只做读，写仍然「KV 权威 + D1 镜像」不变；D1 任何异常都回退 KV，
 // 所以即使 D1 挂了，登记/控制台/分配也不会停，只是慢回旧路。
 // ====================================================================
-const D1_COLS = 'uid,name,song,ck,added,exp,no_listen,email';
+const D1_COLS = 'uid,name,song,ck,added,exp,no_listen,email,agent,plan';
 
 // D1 行 → KV entry 结构（保持字段名完全一致，上层代码无需改动）
 function d1RowToEntry(r) {
@@ -2011,6 +2103,9 @@ function d1RowToEntry(r) {
     added: String(r.added || ''),
     exp: String(r.exp || ''),
     email: String(r.email || ''),
+    // 2026-10-27：客服标签 + 套餐档位。存量行 ALTER 时清一色刷成「徐」/空（空=未标注）。
+    agent: String(r.agent || ''),
+    plan: String(r.plan || ''),
   };
   if (uidRaw && !uidRaw.startsWith('name:')) e.uid = r.uid;
   if (r.no_listen) e.noListen = 1;
@@ -2315,6 +2410,18 @@ async function handle(request) {
       return json(await dispatchSnap650(url.searchParams.get('pool') || 'all'));
     }
     // 本地后台网页（号池管理网页.html）跨域调用本接口：放开 CORS 并处理预检
+    // ---- 客服名单 + 套餐档位（2026-10-27 新增）----
+    // APK / EXE 每次登记前拉一次；名单改在控制台「客服名单」里，改完客户端下次拉就变，不用重发软件。
+    // 不含任何账号信息，故不鉴权（登记接口本来就是公开的）。
+    if (url.pathname === '/api/agents') {
+      const CORS = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
+      if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: {
+        'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type' } });
+      if (request.method !== 'GET') return json({ message: '请用 GET' }, 405, CORS);
+      const rc = await regCfg();
+      return json({ ok: true, agents: rc.agents, plans: rc.plans, at: new Date().toISOString() }, 200, CORS);
+    }
     if (url.pathname === '/api/pool' && request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: {
         'Access-Control-Allow-Origin': '*',
@@ -2525,7 +2632,12 @@ async function handle(request) {
       if (!song.ok) return json({ message: song.msg }, 400);
       const expQ = parseExpInput(body.exp);
       if (!expQ.ok) return json({ message: '有效期格式不对：填天数(如730)、日期(2028-10-18)或不填（默认2年）' }, 400);
-      const r = await addEntry({ ck: 'MUSIC_U=' + login.musicU, song: song.song, added: beijingDate(), name: body.phone, uid: login.uid, email: email, grp: isG2 ? 2 : 1, exp: expQ.exp });
+      // 2026-10-27：客服 + 套餐。套餐只认服务端配置里的档位（key 或显示名），
+      // 认不出来就原样留个短字符串，绝不因为「名字改过」而拒绝登记。
+      const rc1 = await regCfg();
+      const pl1 = planOf(rc1, body.plan);
+      const r = await addEntry({ ck: 'MUSIC_U=' + login.musicU, song: song.song, added: beijingDate(), name: body.phone, uid: login.uid, email: email, grp: isG2 ? 2 : 1, exp: expQ.exp || (pl1 ? pl1.exp : undefined),
+        agent: normAgent(body.agent), plan: pl1 ? pl1.label : normAgent(body.plan).slice(0, 8) });
       if (!r.ok) return json({ message: r.msg }, 400);
       return json({ message: '登记成功，次日生效。' });
     }
@@ -2562,7 +2674,11 @@ async function handle(request) {
       if (!expQ.ok) return json({ message: '有效期格式不对：填天数(如730)、日期(2028-10-18)或不填（默认2年）' }, 400);
       const phoneRaw = (body.phone || '').replace(/[^0-9]/g, '');
       const phone = /^1\d{10}$/.test(phoneRaw) ? phoneRaw : '';
-      const r = await addEntry({ ck: 'MUSIC_U=' + mu, song: song.song, added: beijingDate(), name: phone || ('manual:' + v.uid), uid: v.uid, email: email, phone: phone, grp: isG2 ? 2 : 1, exp: expQ.exp });
+      // 2026-10-27：客服 + 套餐（口径同 /api/join）
+      const rc2 = await regCfg();
+      const pl2 = planOf(rc2, body.plan);
+      const r = await addEntry({ ck: 'MUSIC_U=' + mu, song: song.song, added: beijingDate(), name: phone || ('manual:' + v.uid), uid: v.uid, email: email, phone: phone, grp: isG2 ? 2 : 1, exp: expQ.exp || (pl2 ? pl2.exp : undefined),
+        agent: normAgent(body.agent), plan: pl2 ? pl2.label : normAgent(body.plan).slice(0, 8) });
       if (!r.ok) return json({ message: r.msg }, 400);
       let msg = '登记成功，次日生效。';
       if (v.provisional) msg += '（注：网易校验接口暂时不可达[' + (v.diag || '') + ']，已跳过在线校验；明天任务会自动复验）';
@@ -2831,8 +2947,10 @@ async function handle(request) {
       const CORS = { 'Access-Control-Allow-Origin': '*' };
       let body;
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400, CORS); }
-      const ok = await consoleAuth(body);
-      return json(ok ? { ok: true } : { ok: false, message: '账号或密码错误' }, ok ? 200 : 403, CORS);
+      // 2026-10-27：登录返回 role（full=满权限 / ro=只读）。页面据此把「编辑、删号、客服名单」
+    // 这些写入口全部关掉；真正的拦截在服务端写接口上，前端只是不让人白点。
+      const role = await consoleRole(body);
+      return json(role ? { ok: true, role: role } : { ok: false, message: '账号或密码错误' }, role ? 200 : 403, CORS);
     }
     // 快照写入（run.py 每个分片跑完后上报一次；两群归口本 KV）
     if (url.pathname === '/api/snap' && request.method === 'POST') {
@@ -2969,7 +3087,8 @@ async function handle(request) {
       const CORS = { 'Access-Control-Allow-Origin': '*' };
       let body;
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400, CORS); }
-      if (!(await consoleAuth(body))) return json({ message: '账号或密码错误' }, 403, CORS);
+      const role = await consoleRole(body);
+      if (!role) return json({ message: '账号或密码错误' }, 403, CORS);
       const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : beijingDate();
       const prevDate = dateMinus1(date);
       // 2026-10-22：控制台是高频只读接口，原来每刷新一次就跑 pruneExpired()（全量重建 +
@@ -2988,7 +3107,7 @@ async function handle(request) {
       //   suspectRows → accounts.suspect_at!='' 的待复核号（注意空串不是 NULL，不能写 IS NOT NULL）
       //   freshRows → 各池当天快照最后写入时间（数据新鲜度）
       //   actions   → 两仓库最近一次 run.yml 作业状态（fetchActionsStatus 内部带 KV 5 分钟缓存）
-      const [master, c2, cur, prev, dr, peerUrlRaw, plan, ranRows, deadRows, suspectRows, freshRows, actions, streakRows, songRows, accRows, noticeRows, deadTodayRows] = await Promise.all([
+      const [master, c2, cur, prev, dr, peerUrlRaw, plan, ranRows, deadRows, suspectRows, freshRows, actions, streakRows, songRows, accRows, noticeRows, deadTodayRows, regCfgNow] = await Promise.all([
         mergePool(),
         cfg(),
         readSnapDay(date),
@@ -3016,11 +3135,16 @@ async function handle(request) {
         // 「当日删号」口径判定 —— 删完又登记回来的号不该算成删号。
         // 用 substr 精确匹配那一天：控制台可以切到历史日期，写 at>=date 会把之后几天也算进来。
         d1ok() ? d1All('SELECT pool,uid,reason FROM dead_log WHERE substr(at,1,10)=?', [date]).catch(() => null) : Promise.resolve(null),
+        // 2026-10-27：客服名单 + 套餐档位（控制台据此生成筛选下拉、套餐汇总与编辑弹窗选项）。
+        // 与上面几段一起并发发出，不额外增加一次串行 rtt。
+        regCfg().catch(() => REG_CFG_DEFAULT),
       ]);
       const disp = e => ({
         name: e.name || '', uid: e.uid != null ? String(e.uid) : '',
         song: e.song != null ? String(e.song) : '', added: e.added || '',
         email: e.email || '', phone: e.phone || '', noListen: !!e.noListen, exp: e.exp || '',
+        // 2026-10-27：客服标签 + 套餐档位（控制台新增两列 / 顶部套餐汇总 / 按客服筛选的数据源）
+        agent: e.agent || '', plan: e.plan || '',
       });
       const hz = master.map(disp);
       // 定制群账号列表：实时向对端 worker 拉（对穿口令；拉失败不阻塞主群展示）
@@ -3117,14 +3241,20 @@ async function handle(request) {
       try { if (globalThis.CTX && typeof globalThis.CTX.waitUntil === 'function') globalThis.CTX.waitUntil(backfillMeta()); } catch (e) {}
       return json({ ok: true, date: date, prevDate: prevDate, hz: hz, dz: dz, durs: durs, snap: { cur: cur, prev: prev },
                     coverage: cov, actions: actions || [], dead: dead, deadToday: deadToday, suspects: suspects, fresh: fresh,
-                    streak: streak, songs: songs, artists: artists, periods: periods }, 200, CORS);
+                    streak: streak, songs: songs, artists: artists, periods: periods,
+                    // 2026-10-27：role 决定页面要不要把写入口关掉；cfg 供筛选下拉与编辑弹窗用
+                    role: role, cfg: regCfgNow }, 200, CORS);
     }
     // 控制台编辑：hz 本地执行（与管理后台同一套逻辑）；dz 转发到对端 worker 的对等接口
     if (url.pathname === '/api/console/entry' && request.method === 'POST') {
       const CORS = { 'Access-Control-Allow-Origin': '*' };
       let body;
       try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400, CORS); }
-      if (!(await consoleAuth(body))) return json({ message: '账号或密码错误' }, 403, CORS);
+      // 2026-10-27：写接口只认满权限口令（只读口令进来这里一律 403）
+      if (!(await consoleAuthFull(body))) {
+        const who = await consoleRole(body);
+        return json({ message: who === 'ro' ? '当前是只读口令，不能修改账号' : '账号或密码错误' }, 403, CORS);
+      }
       if (body.pool === 'dz') {
         try {
           const c3 = await cfg();
@@ -3133,7 +3263,8 @@ async function handle(request) {
           const fwdPass = (await peerKey()) || c3.groupPass;
           if (!fwdPass) return json({ message: '本 worker 未配置对穿口令（KV 键 PEER_KEY / GROUP_PASS），无法编辑定制群账号' }, 503, CORS);
           const fwd = { pass: fwdPass, action: body.action, uid: body.uid, name: body.name,
-            ck: body.ck, link: body.link, email: body.email, exp: body.exp, noListen: body.noListen };
+            ck: body.ck, link: body.link, email: body.email, exp: body.exp, noListen: body.noListen,
+            agent: body.agent, plan: body.plan };
           const r = await fetch(peerUrl + '/api/peer/entry', { method: 'POST',
             headers: { 'Content-Type': 'application/json', 'User-Agent': 'cron-relay-worker' },
             body: JSON.stringify(fwd) });
@@ -3144,6 +3275,26 @@ async function handle(request) {
       }
       return applyEntryEdit(body);
     }
+    // 客服名单 / 套餐档位维护（2026-10-27）：只认满权限口令。
+    // 只传要改的字段：agents 和 plans 哪个没传就保持原样，避免「只加一个人把套餐表冲掉」。
+    if (url.pathname === '/api/console/cfg' && request.method === 'POST') {
+      const CORS = { 'Access-Control-Allow-Origin': '*' };
+      let body;
+      try { body = await request.json(); } catch (e) { return json({ message: '参数错误' }, 400, CORS); }
+      if (!(await consoleAuthFull(body))) {
+        const who = await consoleRole(body);
+        return json({ message: who === 'ro' ? '当前是只读口令，不能修改客服名单' : '账号或密码错误' }, 403, CORS);
+      }
+      const cur = await regCfg();
+      const next = {
+        agents: body.agents !== undefined ? body.agents : cur.agents,
+        plans: body.plans !== undefined ? body.plans : cur.plans,
+      };
+      const saved = await saveRegCfg(next);
+      return json({ ok: true, d1: saved.ok, cfg: saved.cfg,
+        message: '已保存：客服 ' + saved.cfg.agents.length + ' 人、套餐 ' + saved.cfg.plans.length + ' 档'
+          + (saved.ok ? '' : '（⚠️ D1 写入失败，已写 KV 兜底，请稍后重试）') }, 200, CORS);
+    }
     return json({ message: 'not found' }, 404);
 }
 
@@ -3152,12 +3303,26 @@ function json(o, status = 200, extraHeaders) { return new Response(JSON.stringif
 // ---- 控制台登录校验（2026-10-22）：用户名固定 xx1031；密码只认 KV 键 CONSOLE_PASS ----
 // 2026-10-22 安全修正：原先未配置 CONSOLE_PASS 时回落到缺省口令 xx1031，等于控制台对外敞开
 //（实测匿名可登录、可看全池姓名/uid/邮箱、可删任意账号）。现在未配置 = 不开放，必须显式设置。
-async function consoleAuth(body) {
+// 2026-10-27 新增只读口令：KV 键 CONSOLE_RO_PASS。拿它进来只能看，任何写接口一律 403。
+//   返回 'full'（满权限）/ 'ro'（只读）/ null（口令不对）。未配置 = 该档位不存在，
+//   所以「没配 CONSOLE_RO_PASS」时只读口令天然用不了，不会退化成谁都能只读。
+async function consoleRole(body) {
   const u = String((body && body.user) || ''), p = String((body && body.pass) || '');
-  if (u !== 'xx1031') return false;
-  const expect = cleanKV(await POOL.get('CONSOLE_PASS'));
-  if (!expect) return false;
-  return p === expect;
+  if (u !== 'xx1031' || !p) return null;
+  let full = '', ro = '';
+  try { full = cleanKV(await POOL.get('CONSOLE_PASS')); } catch (e) {}
+  try { ro = cleanKV(await POOL.get('CONSOLE_RO_PASS')); } catch (e) {}
+  // 满权限口令优先判：万一两把口令被设成同一个值，登进来的应该是满权限那档
+  if (full && p === full) return 'full';
+  if (ro && p === ro) return 'ro';
+  return null;
+}
+async function consoleAuth(body) {
+  return !!(await consoleRole(body));
+}
+// 写接口专用：只认满权限口令
+async function consoleAuthFull(body) {
+  return (await consoleRole(body)) === 'full';
 }
 // ---- 2026-10-23：两仓库最近一次 run.yml 作业状态（供控制台「运行状态」横条）----
 // 以前「今晚 38/38 到底成没成」只能人工去 GitHub 翻，job 绿但分片静默失败也看不出来。
@@ -3414,6 +3579,18 @@ async function applyEntryEdit(body) {
       target.noListen = !!body.noListen;
       changes.push(body.noListen ? '暂停互听(只收不听)' : '恢复互听');
     }
+    // 2026-10-27：客服标签 / 套餐档位（补录、纠错用）。留空=不改，与其它栏口径一致。
+    // 注意：改套餐不会自动改有效期（两件事分开），要一起改就把「有效期」也填上。
+    if (body.agent != null && String(body.agent).trim() !== '') {
+      target.agent = normAgent(body.agent);
+      changes.push('客服=' + (target.agent || '未标注'));
+    }
+    if (body.plan != null && String(body.plan).trim() !== '') {
+      const rcE = await regCfg();
+      const plE = planOf(rcE, body.plan);
+      target.plan = plE ? plE.label : normAgent(body.plan).slice(0, 8);
+      changes.push('套餐=' + target.plan);
+    }
     if (!changes.length) return json({ message: '没有要修改的内容（各栏留空=不改）' }, 400, CORS);
     await POOL.put(entryKeyOf(target), JSON.stringify(target));
     // 2026-10-22：D1 已是唯一读路径，镜像写失败必须显式告诉调用方 ——
@@ -3611,6 +3788,12 @@ button.gray{background:#888}button.warn{background:#a32d2d}button:disabled{opaci
 .stat{flex:1;min-width:96px;background:#f2f7ea;border-radius:10px;padding:8px 10px;text-align:center}
 .stat b{display:block;font-size:19px;color:#3b6d11}.stat span{font-size:11px;color:#666}
 .stat.warn{background:#fdf3e3}.stat.warn b{color:#b06a00}
+/* 2026-10-27 新增：套餐汇总条（按「登记时买的套餐」统计，跟着客服/套餐筛选一起变） */
+.plans{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.pl{background:#fff;border:1px solid #e8eaee;border-radius:9px;padding:6px 12px;font-size:12px;color:#555}
+.pl b{font-size:15px;color:#3b6d11;margin-left:5px}
+.pl.muted{color:#9aa5b1}.pl.muted b{color:#aab4c0}
+.ro{display:inline-block;background:#fdf3e3;color:#b06a00;border-radius:8px;padding:2px 9px;font-size:11px;margin-left:6px;vertical-align:middle;font-weight:400}
 .tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
 .tools input{min-width:130px}.tools input#q{flex:1;min-width:160px}
 .tab{padding:8px 14px;border-radius:8px;background:#eee;color:#555;cursor:pointer;font-size:13px}
@@ -3654,9 +3837,11 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 .deadbox{margin:10px 0 0;font-size:12px;color:#555}
 .deadbox summary{cursor:pointer;color:#3b6d11;padding:4px 0}
 .deadbox table{margin-top:6px;border:1px solid #eee;border-radius:8px}
-/* 手机端（<=860px）把 15 列表格改成卡片流。纯 CSS、零 JS 改动 —— 判定口径与桌面端完全同一份，
-   只是换了个呈现方式；桌面端（>860px）一行都不受影响。列名靠 nth-child 硬编码，顺序同 thead：
-   1# 2池 3账号 4UID 5歌曲 6时长 7昨日650 8今日650 9较昨日 10近30日播放 11其他任务 12入池 13有效期 14标记 15操作 */
+/* 手机端（<=860px）把 17 列表格改成卡片流。纯 CSS、零 JS 改动 —— 判定口径与桌面端完全同一份，
+   只是换了个呈现方式；桌面端（>860px）一行都不受影响。列名读 td 的 data-l（见 render），
+   这里只排显示顺序，顺序同 thead：
+   1# 2池 3账号 4客服 5UID 6歌曲 7时长 8昨日650 9今日650 10较昨日 11近30日播放 12其他任务
+   13入池 14有效期 15套餐 16标记 17操作 */
 @media (max-width:860px){
   body{padding:10px 8px}
   .head{margin-bottom:8px}.page-title{font-size:16px}.page-sub{font-size:11px;line-height:1.5}
@@ -3665,6 +3850,9 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   .stats{gap:6px;margin-bottom:10px}
   .stat{flex:1 1 30%;min-width:0;padding:7px 5px;border-radius:9px}
   .stat b{font-size:16px}.stat span{font-size:10.5px;line-height:1.25}
+  .plans{gap:6px;margin-bottom:10px}
+  .pl{flex:1 1 40%;padding:5px 9px;font-size:11.5px}
+  .pl b{font-size:14px}
   .tools{gap:6px;margin-bottom:8px}
   .tools input,.tools select,.tools button,.mini{padding:8px 10px;font-size:12.5px}
   .runbar{gap:6px;margin-bottom:10px}
@@ -3681,32 +3869,26 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   .twrap td:nth-child(1){order:0;flex:0 0 auto;font-size:11px;color:#b3bcc6;padding-bottom:0}
   .twrap td:nth-child(2){order:1;flex:0 0 auto}
   .twrap td:nth-child(3){order:2;flex:1 1 auto;font-size:14px;font-weight:600;color:#222;padding-bottom:3px}
-  .twrap td:nth-child(8){order:3;flex:1 1 45%;font-size:14px}
-  .twrap td:nth-child(8)::before{content:"今日650"}
-  .twrap td:nth-child(9){order:4;flex:1 1 45%}
-  .twrap td:nth-child(9)::before{content:"较昨日"}
-  .twrap td:nth-child(14){order:5;flex:0 0 100%;padding:4px 0 2px}
-  .twrap td:nth-child(7){order:6;flex:1 1 45%}
-  .twrap td:nth-child(7)::before{content:"昨日650"}
-  .twrap td:nth-child(10){order:7;flex:1 1 45%}
-  .twrap td:nth-child(10)::before{content:"近30日播放"}
-  .twrap td:nth-child(6){order:8;flex:1 1 45%}
-  .twrap td:nth-child(6)::before{content:"时长"}
-  .twrap td:nth-child(12){order:9;flex:1 1 45%}
-  .twrap td:nth-child(12)::before{content:"入池"}
+  .twrap td:nth-child(4){order:3;flex:0 0 auto}
+  .twrap td:nth-child(9){order:4;flex:1 1 45%;font-size:14px}
+  .twrap td:nth-child(10){order:5;flex:1 1 45%}
+  .twrap td:nth-child(16){order:6;flex:0 0 100%;padding:4px 0 2px}
+  .twrap td:nth-child(8){order:7;flex:1 1 45%}
+  .twrap td:nth-child(11){order:8;flex:1 1 45%}
+  .twrap td:nth-child(7){order:9;flex:1 1 45%}
   .twrap td:nth-child(13){order:10;flex:1 1 45%}
-  .twrap td:nth-child(13)::before{content:"有效期"}
-  .twrap td:nth-child(11){order:11;flex:0 0 100%}
-  .twrap td:nth-child(11)::before{content:"其他任务"}
-  .twrap td:nth-child(4){order:12;flex:1 1 45%}
-  .twrap td:nth-child(4)::before{content:"UID"}
-  .twrap td:nth-child(5){order:13;flex:0 0 100%}
-  .twrap td:nth-child(5)::before{content:"歌曲"}
-  .twrap td:nth-child(15){order:20;flex:0 0 100%;padding-top:6px;margin-top:4px;border-top:1px solid #f2f4f6}
-  .twrap td:nth-child(15) button{width:100%}
-  .twrap td:nth-child(1)::before,.twrap td:nth-child(2)::before,
-  .twrap td:nth-child(3)::before,.twrap td:nth-child(14)::before,
-  .twrap td:nth-child(15)::before{content:none}
+  .twrap td:nth-child(14){order:11;flex:1 1 45%}
+  .twrap td:nth-child(15){order:12;flex:1 1 45%}
+  .twrap td:nth-child(12){order:13;flex:0 0 100%}
+  .twrap td:nth-child(5){order:14;flex:1 1 45%}
+  .twrap td:nth-child(6){order:15;flex:0 0 100%}
+  .twrap td:nth-child(17){order:20;flex:0 0 100%;padding-top:6px;margin-top:4px;border-top:1px solid #f2f4f6}
+  .twrap td:nth-child(17) button{width:100%}
+  /* 2026-10-27：列名不再用 nth-child 硬编码，改成读 td 的 data-l 属性。
+     原来每加一列都要手工重排 15 条 nth-child，10-26 就因为对不上出过一次排版事故；
+     改用 data-l 后只有「显示顺序」还需要 nth-child，标签永远跟着格子走。 */
+  .twrap td::before{content:attr(data-l);color:#9aa5b1;font-size:11px;flex:0 0 auto}
+  .twrap td:not([data-l])::before{content:none}
   /* 「删号记录」6 列表 / 「标记对照表」3 列表，在 360px 下每列只剩几十 px，会被挤成一字一行。
      手机端改成一条一条的块：删号记录 → 首行 池+UID+账号，下面 原因/通知/时间 各占一行带标签；
      对照表 → 标记一行、意思一行、要怎么处理一行（前缀「意思｜」「处理｜」代替表头）。桌面端不受影响。 */
@@ -3730,7 +3912,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   .lgd td[colspan]{display:block;margin:2px 0 0;padding:4px 8px;border-radius:6px}
 }
 </style></head><body>
-<div class="head"><h1 class="page-title">650 任务进阶控制台</h1><p class="page-sub">两群账号每日快照 · 数据由 Actions 播放时段顺带采集（T+1 可见）· CK 不在页面展示</p></div>
+<div class="head"><h1 class="page-title" id="ptitle">650 任务进阶控制台</h1><p class="page-sub">两群账号每日快照 · 数据由 Actions 播放时段顺带采集（T+1 可见）· CK 不在页面展示</p></div>
 <div class="abox" id="loginBox">
   <h3 style="margin:0 0 10px">输入控制台口令</h3>
   <p style="margin:0 0 8px;color:#888;font-size:13px;line-height:1.5">账号固定 <b>xx1031</b>，只需填口令。用 CK助手点「进阶控制台」会自动填好、不用手输；想重输口令：按住 Ctrl 再点那个按钮。</p>
@@ -3744,17 +3926,21 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
 <div class="abox" id="mainBox" hidden>
   <div class="runbar" id="runbar"></div>
   <div class="stats" id="stats"></div>
+  <div class="plans" id="plans"></div>
   <div class="tools">
     <span class="tab on" data-p="all">全部</span><span class="tab" data-p="hz">主群</span><span class="tab" data-p="dz">定制群</span>
+    <select id="fagent" title="按客服筛选（顶部套餐汇总、所有统计都跟着变）"><option value="">客服：全部</option></select>
+    <select id="fplan" title="按套餐筛选"><option value="">套餐：全部</option></select>
     <input type="date" id="date">
-    <input id="q" placeholder="搜索：账号 / 邮箱 / UID / 歌曲ID">
+    <input id="q" placeholder="搜索：账号 / 邮箱 / UID / 歌曲ID / 客服">
     <select id="sort"><option value="default">排序：默认</option><option value="delta">排序：日涨幅↓</option><option value="rate">排序：今日进度↓</option></select>
     <button class="mini" id="btnCsv">导出CSV</button>
     <button class="mini" id="btnRefresh">刷新</button>
+    <button class="mini gray" id="btnCfg" style="display:none">客服名单</button>
     <button class="mini gray" id="btnOut">退出</button>
   </div>
   <div class="twrap"><table><thead><tr>
-    <th>#</th><th>池</th><th>账号</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记，按 已发x/4 显示：30天内发布图文笔记天数≥4，4/4=已完成）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th>标记</th><th>操作</th>
+    <th>#</th><th>池</th><th>账号</th><th title="这条登记是谁录的（客服标签，登记前必须在 APK/EXE 里选）">客服</th><th>UID</th><th>绑定歌曲</th><th>时长</th><th title="昨天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">昨日<br>650进度</th><th title="今天快照里的 650 任务完成度（近30日有效播放，100%=已达标）">今日<br>650进度</th><th title="今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）">较昨日</th><th title="网易工作台 recentPlayCount30：近30日播放次数（不是有效播放，也不等于650进度）">近30日<br>播放量</th><th title="除 650 播放外的同组小任务（如发布笔记，按 已发x/4 显示：30天内发布图文笔记天数≥4，4/4=已完成）；跟播放/650 无关，不看也不影响">其他<br>任务</th><th>入池</th><th>有效期</th><th title="登记时买的套餐（1年/2年/永久）。顶部「套餐汇总」按这一列统计，不按剩余天数算">套餐</th><th>标记</th><th>操作</th>
   </tr></thead><tbody id="tb"></tbody></table></div>
   <details class="deadbox" id="deadBox" hidden><summary>删号记录 / 待复核账号（最近 12 条，来自 D1 dead_log 与 accounts.suspect_at）</summary>
   <div class="muted" style="margin:6px 0 8px">原因：<b>手动删除</b>＝你在控制台/号池工具点的删除；<b>Cookie失效</b>＝播放前验活自动判死；<b>到期清理</b>＝账号有效期到了自动移除。已回池（迁移到另一群或当天重登）的号不算删号。<br>通知：<b>已通知</b>＝确认发出；<b>已回池·不发</b>＝号还在跑；<b>无邮箱·不发</b>＝没登记邮箱；<b>待判·12h</b>＝删后满 12 小时才判定该不该发；<b>自动判死·run.py 发信</b>＝早期记录，发信由播放任务临时触发，发没发事后查不到。</div><div id="deadList"></div></details>
@@ -3807,14 +3993,31 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   <h3 id="mTitle">编辑账号</h3><p style="font-size:12px;color:#888;margin:4px 0 0" id="mSub"></p>
   <label>改绑歌曲（粘贴 APP 分享链接，留空不改）</label><input id="eLink" placeholder="https://163.com/... 或 song?id=...">
   <label>通知邮箱（留空不改）</label><input id="eEmail">
+  <label>客服（谁录的这条，留空不改）</label><select id="eAgent"><option value="">不修改</option></select>
+  <label>套餐（登记时买的时长，留空不改；<b>改套餐不会自动改有效期</b>，要一起改就把下面有效期也填上）</label>
+  <select id="ePlan"><option value="">不修改</option></select>
   <label>有效期（天数 / 日期 / 永久，留空不改）</label><input id="eExp">
   <label>暂停互听（只收不听）</label><select id="eNo"><option value="">不修改</option><option value="0">参与互听</option><option value="1">暂停互听</option></select>
   <label>更换 CK（MUSIC_U，留空不改；保存前服务端会先校验有效性）</label><input id="eCk" placeholder="粘贴新的 MUSIC_U 值">
   <div class="row2"><button id="eSave">保存修改</button><button class="warn" id="eDel">删除账号</button><button class="gray" id="eCancel">关闭</button></div>
   <div class="msg" id="em"></div>
 </div></div>
+<div class="modal" id="cfgModal" hidden><div class="mbox">
+  <h3>客服名单 / 套餐档位</h3>
+  <p style="font-size:12px;color:#888;margin:4px 0 0">改完保存立即生效：APK / EXE 下次登记前会自动拉到新名单，<b>不用重新打包</b>。只读口令进不来这一页。</p>
+  <label>客服（一行一个，顺序即下拉顺序）</label>
+  <textarea id="cAgents" rows="5" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:ui-monospace,Consolas,monospace"></textarea>
+  <label>套餐（一行一个，格式 <code>显示名=天数</code>；天数填 0 表示永久）</label>
+  <textarea id="cPlans" rows="4" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:ui-monospace,Consolas,monospace"></textarea>
+  <p style="font-size:11.5px;color:#999;margin:6px 0 0">例：<code>1年=365</code> / <code>2年=730</code> / <code>永久=0</code>。删掉某个套餐不会影响已登记的号（它们的套餐名照旧显示）。</p>
+  <div class="row2"><button id="cSave">保存</button><button class="gray" id="cCancel">关闭</button></div>
+  <div class="msg" id="cm"></div>
+</div></div>
 <script>
 var TOKEN=null, DATA=null, POOLF='all';
+// 2026-10-27：ROLE='full' 满权限 / 'ro' 只读（只能看，编辑、删号、客服名单全部关掉）。
+// AGENTF/PLANF 是客服/套餐筛选值；AGENTS/PLANS 来自服务端 reg_cfg（控制台可改，不用重发软件）。
+var ROLE='ro', AGENTF='', PLANF='', AGENTS=[], PLANS=[];
 function $(id){return document.getElementById(id);}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function todayBJ(){var d=new Date(Date.now()+8*3600*1000);return d.toISOString().slice(0,10);}
@@ -3827,7 +4030,7 @@ function login(){
   $('lbtn').disabled=true;
   api('/api/console/login',{user:u,pass:p}).then(function(o){
     $('lbtn').disabled=false;
-    if(o.ok&&o.d.ok){TOKEN=JSON.stringify({user:u,pass:p});save(TOKEN);$('loginBox').hidden=true;$('mainBox').hidden=false;loadData();}
+    if(o.ok&&o.d.ok){TOKEN=JSON.stringify({user:u,pass:p});save(TOKEN);$('loginBox').hidden=true;$('mainBox').hidden=false;applyRole(o.d.role);loadData();}
     else{$('lm').textContent=(o.d&&o.d.message)||'登录失败';$('lm').className='msg err';}
   }).catch(function(){$('lbtn').disabled=false;$('lm').textContent='网络错误';$('lm').className='msg err';});
 }
@@ -3838,6 +4041,8 @@ $('btnOut').onclick=function(){try{sessionStorage.removeItem('consToken');}catch
 $('btnRefresh').onclick=loadData;
 $('date').onchange=loadData;
 $('q').oninput=render;$('sort').onchange=render;
+$('fagent').onchange=function(){AGENTF=this.value;render();};
+$('fplan').onchange=function(){PLANF=this.value;render();};
 // 2026-10-24：表格区高度自适应视口剩余空间 → 滚动发生在 .twrap 内部，配合 .twrap th 的 sticky 实现表头冻结
 // 2026-10-26 修（手机端排版错乱）：手机宽度下表格已改成卡片流、整页滚动，这里绝不能再锁高度。
 //   原来这里无条件写 w.style.maxHeight，手机上 innerHeight 减掉页头/统计/工具条后只剩 100 多 px，
@@ -3862,13 +4067,56 @@ function accsOf(day,pool){
   if(S.cur||S.prev){var src=(day&&day===DATA.prevDate)?S.prev:S.cur;return (src&&src[pool])||{};}
   return (S[day]&&S[day][pool])||{};
 }
+// ===== 2026-10-27：客服名单 / 套餐档位（服务端 reg_cfg）=====
+// 下拉选项全部由服务端给，页面里不写死任何人名 —— 加人/停人只改一次配置。
+function fillSel(el,items,keep,allLabel){
+  var h='';
+  if(allLabel!=null)h+='<option value="">'+esc(allLabel)+'</option>';
+  else h+='<option value="">不修改</option>';
+  h+=items.map(function(v){return '<option value="'+esc(v)+'">'+esc(v)+'</option>';}).join('');
+  el.innerHTML=h;
+  el.value=items.indexOf(keep)>=0?keep:'';
+  return el.value;
+}
+function applyCfg(cfg){
+  cfg=cfg||{};
+  AGENTS=(cfg.agents||[]).slice();
+  PLANS=(cfg.plans||[]).slice();
+  AGENTF=fillSel($('fagent'),AGENTS,AGENTF,'客服：全部');
+  var labels=PLANS.map(function(p){return p.label;});
+  PLANF=fillSel($('fplan'),labels,PLANF,'套餐：全部');
+  fillSel($('eAgent'),AGENTS,'',null);
+  fillSel($('ePlan'),labels,'',null);
+}
+// 只读口令进来：所有写入口关掉。真正的拦截在服务端（写接口只认满权限口令），
+// 前端这层只是不让人白点、也不给误操作的机会。
+function applyRole(role){
+  ROLE=(role==='full')?'full':'ro';
+  var full=(ROLE==='full');
+  $('btnCfg').style.display=full?'':'none';
+  var t=$('ptitle');
+  if(t){
+    var old=document.getElementById('roTag');
+    if(old)old.parentNode.removeChild(old);
+    if(!full){
+      var s=document.createElement('span');
+      s.id='roTag';s.className='ro';s.textContent='只读';
+      s.title='你现在用的是只读口令：可以看全部数据、可以导出，但不能改任何东西';
+      t.appendChild(s);
+    }
+  }
+}
 function loadData(){
   var t=JSON.parse(TOKEN||'{}');
   $('btnRefresh').disabled=true;
   api('/api/console/data',{user:t.user,pass:t.pass,date:$('date').value||todayBJ()}).then(function(o){
     $('btnRefresh').disabled=false;
     if(!o.ok){$('lm').textContent=o.d.message||'请重新登录';$('lm').className='msg err';$('loginBox').hidden=false;$('mainBox').hidden=true;return;}
-    DATA=o.d;$('date').value=DATA.date;render();fitTable();
+    DATA=o.d;
+    $('date').value=DATA.date;
+    applyCfg(DATA.cfg);           // 客服/套餐下拉 + 汇总口径
+    applyRole(DATA.role);         // 满权限 / 只读（服务端 data 里带，刷新一次就恢复正确权限）
+    render();fitTable();
   }).catch(function(){$('btnRefresh').disabled=false;});
 }
 // 2026-10-24：网易工作台只回 missionCode + progressRate 两个原始字段，不翻译就是一串天书；
@@ -4021,10 +4269,13 @@ function render(){
   var q=($('q').value||'').trim().toLowerCase();
   var rows=all.filter(function(r){
     if(POOLF!=='all'&&r.pool!==POOLF)return false;
+    // 2026-10-27：客服 / 套餐 两个下拉筛选（顶部所有统计都跟着它变）
+    if(AGENTF&&String(r.e.agent||'')!==AGENTF)return false;
+    if(PLANF&&String(r.e.plan||'')!==PLANF)return false;
     if(!q)return true;
     var e=r.e;
     // 2026-10-25：搜索也能命中标记文本（如搜「绑错歌」「共创」「未开刷」直接筛出同类号）
-    return ((e.name||'')+' '+(e.email||'')+' '+(e.uid||'')+' '+(e.song||'')+' '+r.markText).toLowerCase().indexOf(q)>=0;
+    return ((e.name||'')+' '+(e.email||'')+' '+(e.uid||'')+' '+(e.song||'')+' '+(e.agent||'')+' '+(e.plan||'')+' '+r.markText).toLowerCase().indexOf(q)>=0;
   });
   var s=$('sort').value;
   if(s==='delta')rows.sort(function(x,y){return (y.delta==null?-999:y.delta)-(x.delta==null?-999:x.delta);});
@@ -4069,6 +4320,26 @@ function render(){
    +'<div class="stat'+(svcCoop?' warn':'')+'" title="共创歌曲 = 多人合唱：播放会被分摊给其他艺人，非主艺的号实测恒定 0%。搜索「共创歌曲」可筛出这一类"><b style="color:#b85c00">'+svcCoop+'</b><span>共创歌曲</span></div>'
    +'<div class="stat" title="本周期已做满 100% 的号：继续刷没有额外收益，等下个 31 天周期归零重爬。搜索「已达100%」可筛出"><b>'+done100+'</b><span>已达100%</span></div>'
    ;
+  // ===== 2026-10-27：套餐汇总 =====
+  // 口径：按「登记时买的套餐」（accounts.plan）统计，不按剩余天数反推 —— exp 可改可续，反推会漂。
+  // 三档来自服务端 reg_cfg，加档位不用改页面；存量号没套餐的单独算「未标注」，不混进任何一档。
+  var planCnt={};
+  rows.forEach(function(r){var k=String(r.e.plan||'');planCnt[k]=(planCnt[k]||0)+1;});
+  var ph='';
+  PLANS.forEach(function(p){
+    var n=planCnt[p.label]||0;
+    ph+='<div class="pl" title="登记时买的是「'+esc(p.label)+'」的号：'+n+' 个（点这里可按套餐筛选）"'
+      +' onclick="pickPlan(\''+esc(p.label)+'\')" style="cursor:pointer">'+esc(p.label)+'<b>'+n+'</b></div>';
+  });
+  // 配置里没有、但库里真有的历史套餐名（比如以前手输的），照样列出来，绝不吞数据
+  Object.keys(planCnt).forEach(function(k){
+    if(!k)return;
+    if(PLANS.some(function(p){return p.label===k;}))return;
+    ph+='<div class="pl muted" title="不在当前套餐档位里（历史数据），共 '+planCnt[k]+' 个">'+esc(k)+'<b>'+planCnt[k]+'</b></div>';
+  });
+  var noPlan=planCnt['']||0;
+  if(noPlan)ph+='<div class="pl muted" title="登记时没有套餐信息的号（多半是加字段之前登记的老号）">未标注<b>'+noPlan+'</b></div>';
+  $('plans').innerHTML=ph||'';
   var h='';
   rows.forEach(function(r,i){
     var e=r.e,a=r.a;
@@ -4083,16 +4354,39 @@ function render(){
         :(dur>336?'<span class="badge b-yellow" title="长歌（超过 5:36）：单次播放耗时长，会拖慢单班进度">'+mm+':'+ss+'</span>'
         :'<span class="num">'+mm+':'+ss+'</span>');}
     var marks=r.markHtml||'';   // 2026-10-25：标记已在 render 开头由 computeMarks 算好（搜索框也能命中）
+    // 2026-10-27：客服 / 套餐两列；data-l 提供手机端卡片标签（列顺序变了标签不会跟着错）。
+    var agCell=e.agent?'<span class="badge b-gray" title="这条登记是 '+esc(e.agent)+' 录的">'+esc(e.agent)+'</span>':'<span style="color:#ccc">—</span>';
+    var plCell=e.plan?esc(e.plan):'<span style="color:#ccc">未标注</span>';
+    var opCell=(ROLE==='full')
+      ? '<button class="mini" style="padding:4px 10px;font-size:12px" data-pool="'+r.pool+'" data-uid="'+esc(e.uid)+'" data-name="'+esc(e.name)+'">编辑</button>'
+      : '<span style="color:#c9ced6;font-size:12px">只读</span>';
     h+='<tr><td class="num">'+(i+1)+'</td>'
       +'<td><span class="badge '+(r.pool==='hz'?'b-hz">主群':'b-dz">定制')+'</span></td>'
-      +'<td>'+esc(e.name)+'</td><td class="num">'+esc(e.uid)+'</td><td class="num">'+song+'</td><td>'+durCell+'</td>'
-      +'<td class="num">'+ratePrev+'</td><td class="num" style="font-weight:600">'+rateNow+(a&&a.at?'<div class="snap-at">采于 '+bjTime(a.at)+'</div>':'')+'</td><td>'+dCell+'</td>'
-      +'<td class="num">'+(a&&a.rpc30!=null?a.rpc30:'—')+'</td><td>'+misCell+'</td>'
-      +'<td class="num">'+esc(e.added)+'</td><td class="num">'+esc(e.exp||'永久')+'</td>'
+      +'<td>'+esc(e.name)+'</td>'
+      +'<td>'+agCell+'</td>'
+      +'<td class="num" data-l="UID">'+esc(e.uid)+'</td>'
+      +'<td class="num" data-l="歌曲">'+song+'</td>'
+      +'<td data-l="时长">'+durCell+'</td>'
+      +'<td class="num" data-l="昨日650">'+ratePrev+'</td>'
+      +'<td class="num" data-l="今日650" style="font-weight:600">'+rateNow+(a&&a.at?'<div class="snap-at">采于 '+bjTime(a.at)+'</div>':'')+'</td>'
+      +'<td data-l="较昨日">'+dCell+'</td>'
+      +'<td class="num" data-l="近30日播放">'+(a&&a.rpc30!=null?a.rpc30:'—')+'</td>'
+      +'<td data-l="其他任务">'+misCell+'</td>'
+      +'<td class="num" data-l="入池">'+esc(e.added)+'</td>'
+      +'<td class="num" data-l="有效期">'+esc(e.exp||'永久')+'</td>'
+      +'<td data-l="套餐">'+plCell+'</td>'
       +'<td>'+(marks||'<span style="color:#bbb">正常</span>')+'</td>'
-      +'<td><button class="mini" style="padding:4px 10px;font-size:12px" data-pool="'+r.pool+'" data-uid="'+esc(e.uid)+'" data-name="'+esc(e.name)+'">编辑</button></td></tr>';
+      +'<td>'+opCell+'</td></tr>';
   });
-  $('tb').innerHTML=h||'<tr><td colspan="15" style="text-align:center;color:#999;padding:20px">没有匹配的账号</td></tr>';
+  $('tb').innerHTML=h||'<tr><td colspan="17" style="text-align:center;color:#999;padding:20px">没有匹配的账号</td></tr>';
+}
+// 点顶部的套餐卡片 = 直接按这个套餐筛选（再点一次取消）
+function pickPlan(label){
+  var el=$('fplan');
+  if(!el)return;
+  PLANF=(el.value===label)?'':label;
+  el.value=PLANF;
+  render();
 }
 // 2026-10-23：运行状态横条（作业状态/应跑实跑/快照新鲜度/今日删号与待复核）
 function bjTime(iso){if(!iso)return '';var d=new Date(iso);if(isNaN(d.getTime()))return '';var b=new Date(d.getTime()+8*3600*1000);return ('0'+(b.getUTCMonth()+1)).slice(-2)+'-'+('0'+b.getUTCDate()).slice(-2)+' '+('0'+b.getUTCHours()).slice(-2)+':'+('0'+b.getUTCMinutes()).slice(-2);}
@@ -4179,6 +4473,10 @@ function renderRunbar(){
 }
 window.openEdit=function(pool,uid,name){
   $('eLink').value='';$('eEmail').value='';$('eExp').value='';$('eNo').value='';$('eCk').value='';$('em').textContent='';
+  // 2026-10-27：客服/套餐下拉每次打开都按当前配置重建（名单可能在别的标签页刚改过）
+  applyCfg(DATA&&DATA.cfg);
+  if($('eAgent'))$('eAgent').value='';
+  if($('ePlan'))$('ePlan').value='';
   $('mTitle').textContent='编辑账号 · '+(pool==='hz'?'主群':'定制群');
   $('mSub').textContent=name+(uid?' / uid '+uid:'');
   $('modal').hidden=false;
@@ -4197,6 +4495,9 @@ function doEdit(pool,e,action){
   if(action==='update'){
     body.link=$('eLink').value.trim();body.email=$('eEmail').value.trim();body.exp=$('eExp').value.trim();body.ck=$('eCk').value.trim();
     if($('eNo').value!=='')body.noListen=$('eNo').value==='1';
+    // 2026-10-27：留空=不改（与其它栏一致）
+    if($('eAgent').value)body.agent=$('eAgent').value;
+    if($('ePlan').value)body.plan=$('ePlan').value;
   }
   $('eSave').disabled=true;$('eDel').disabled=true;
   api('/api/console/entry',body).then(function(o){
@@ -4206,12 +4507,39 @@ function doEdit(pool,e,action){
   }).catch(function(){$('eSave').disabled=false;$('eDel').disabled=false;$('em').textContent='网络错误';$('em').className='msg err';});
 }
 $('eCancel').onclick=function(){$('modal').hidden=true;};
+// ===== 2026-10-27：客服名单 / 套餐档位维护（只读口令看不到这个按钮，服务端也会拦）=====
+// 客服一行一个；套餐一行一个「显示名=天数」，天数 0 = 永久。改完保存，APK/EXE 下次登记自动拿到。
+$('btnCfg').onclick=function(){
+  var c=(DATA&&DATA.cfg)||{agents:[],plans:[]};
+  $('cAgents').value=(c.agents||[]).join('\\n');
+  $('cPlans').value=(c.plans||[]).map(function(p){return p.label+'='+p.days;}).join('\\n');
+  $('cm').textContent='';$('cfgModal').hidden=false;
+};
+$('cCancel').onclick=function(){$('cfgModal').hidden=true;};
+$('cSave').onclick=function(){
+  var t=JSON.parse(TOKEN||'{}');
+  var agents=$('cAgents').value.split('\\n').map(function(s){return s.trim();}).filter(Boolean);
+  var plans=$('cPlans').value.split('\\n').map(function(s){
+    s=s.trim();if(!s)return null;
+    var q=s.split('=');if(q.length<2)return null;
+    var lb=q[0].trim(),dy=parseInt(q[1],10);
+    if(!lb||isNaN(dy))return null;
+    return {key:lb,label:lb,days:dy};
+  }).filter(Boolean);
+  if(!agents.length||!plans.length){$('cm').textContent='客服和套餐至少要各留一条';$('cm').className='msg err';return;}
+  $('cSave').disabled=true;
+  api('/api/console/cfg',{user:t.user,pass:t.pass,agents:agents,plans:plans}).then(function(o){
+    $('cSave').disabled=false;
+    if(o.ok&&o.d.ok){$('cm').textContent=o.d.message||'已保存';$('cm').className='msg ok';setTimeout(function(){$('cfgModal').hidden=true;loadData();},900);}
+    else{$('cm').textContent=(o.d&&o.d.message)||'保存失败';$('cm').className='msg err';}
+  }).catch(function(){$('cSave').disabled=false;$('cm').textContent='网络错误';$('cm').className='msg err';});
+};
 $('btnCsv').onclick=function(){
-  var rows=[['池','账号','UID','歌曲ID','时长(秒)','昨进度','今进度','日环比','近30日播放','入池','有效期','邮箱','标记']];
+  var rows=[['池','账号','客服','套餐','UID','歌曲ID','时长(秒)','昨进度','今进度','日环比','近30日播放','入池','有效期','邮箱','标记']];
   buildRows().forEach(function(r){
     var e=r.e;
     var dur=(DATA.durs||{})[r.pool+'|'+e.uid]||(DATA.durs||{})[e.uid]||((r.a&&r.a.dur)||'');
-    rows.push([r.pool==='hz'?'主群':'定制群',e.name,e.uid||'',e.song||'',dur,
+    rows.push([r.pool==='hz'?'主群':'定制群',e.name,e.agent||'',e.plan||'',e.uid||'',e.song||'',dur,
       r.p&&r.p.rate!=null?r.p.rate:'',r.a&&r.a.rate!=null?r.a.rate:'',r.delta==null?'':r.delta,
       r.a&&r.a.rpc30!=null?r.a.rpc30:'',e.added||'',e.exp||'永久',e.email||'',e.noListen?'只收':'']);
   });
@@ -4237,7 +4565,7 @@ $('btnCsv').onclick=function(){
     api('/api/console/login',{user:'xx1031',pass:pw}).then(function(o){
       if(o.ok&&o.d.ok){
         TOKEN=JSON.stringify({user:'xx1031',pass:pw});save(TOKEN);
-        lb.hidden=true;mb.hidden=false;loadData();
+        lb.hidden=true;mb.hidden=false;applyRole(o.d.role);loadData();
       }else{
         lb.hidden=false;mb.hidden=true;
         $('lm').textContent=(o.d&&o.d.message)||'免密登录失败，请重新输入控制台口令';$('lm').className='msg err';
