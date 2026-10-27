@@ -3798,6 +3798,15 @@ button.gray{background:#888}button.warn{background:#a32d2d}button:disabled{opaci
 .ro{display:inline-block;background:#fdf3e3;color:#b06a00;border-radius:8px;padding:2px 9px;font-size:11px;margin-left:6px;vertical-align:middle;font-weight:400}
 .tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
 .tools input{min-width:130px}.tools input#q{flex:1;min-width:160px}
+/* 2026-10-27：入池日期范围筛选（两个日期输入框 + 清除）。有筛选时整组变绿，一眼看出不是全部号。 */
+.drng{display:inline-flex;align-items:center;gap:4px;background:#f5f6f8;border:1px solid #e8eaee;border-radius:8px;padding:2px 6px}
+.drng i{font-style:normal;font-size:12px;color:#666}
+.drng em{font-style:normal;color:#aaa;font-size:12px}
+.drng input{border:1px solid #ddd;border-radius:6px;padding:5px 6px;font-size:12.5px;min-width:118px;background:#fff}
+.drng .dx{display:none;cursor:pointer;color:#999;font-size:15px;padding:0 4px;line-height:1;user-select:none}
+.drng .dx:hover{color:#a32d2d}
+.drng.on{background:#f2f7ea;border-color:#cfe0b4}
+.drng.on .dx{display:inline}
 .tab{padding:8px 14px;border-radius:8px;background:#eee;color:#555;cursor:pointer;font-size:13px}
 .tab.on{background:#3b6d11;color:#fff}
 .twrap{overflow:auto;max-height:calc(100vh - 170px);border:1px solid #eee;border-radius:10px}
@@ -3857,6 +3866,9 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   .pl b{font-size:14px}
   .tools{gap:6px;margin-bottom:8px}
   .tools input,.tools select,.tools button,.mini{padding:8px 10px;font-size:12.5px}
+  /* 手机端：入池范围整组单占一行，两个日期框平分宽度，否则日期框各自换行会顶掉半屏 */
+  .drng{flex:1 1 100%;justify-content:space-between;padding:3px 5px}
+  .drng input{flex:1;min-width:0;padding:7px 4px;font-size:12px}
   .runbar{gap:6px;margin-bottom:10px}
   .rb{min-width:0;flex:1 1 100%;padding:7px 10px;font-size:11.5px}
   .twrap{border:0;border-radius:0;max-height:none!important;height:auto!important;overflow:visible;background:transparent}
@@ -3933,7 +3945,8 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <span class="tab on" data-p="all">全部</span><span class="tab" data-p="hz">主群</span><span class="tab" data-p="dz">定制群</span>
     <select id="fagent" title="按客服筛选（顶部套餐汇总、所有统计都跟着变）"><option value="">客服：全部</option></select>
     <select id="fplan" title="按套餐筛选"><option value="">套餐：全部</option></select>
-    <input type="date" id="date">
+    <input type="date" id="date" title="快照日期：看的是这一天的 650 进度（跟右边的「入池」范围筛选互不影响）">
+    <span class="drng" id="drng" title="按「入池日期」筛选：只看这段时间登记进来的号。只填一端也行（如只填左边=这天及以后），两端都空=全部。清空点右边的 ×"><i>入池</i><input type="date" id="dFrom" title="入池起始日（含）"><em>~</em><input type="date" id="dTo" title="入池结束日（含）"><span class="dx" id="dClear" title="清除入池日期范围">×</span></span>
     <input id="q" placeholder="搜索：账号 / 邮箱 / UID / 歌曲ID / 客服">
     <select id="sort"><option value="default">排序：默认</option><option value="delta">排序：日涨幅↓</option><option value="rate">排序：今日进度↓</option></select>
     <button class="mini" id="btnCsv">导出CSV</button>
@@ -4059,6 +4072,9 @@ $('date').onchange=loadData;
 $('q').oninput=render;$('sort').onchange=render;
 $('fagent').onchange=function(){AGENTF=this.value;render();};
 $('fplan').onchange=function(){PLANF=this.value;render();};
+// 2026-10-27：入池日期范围筛选。纯前端过滤（数据本来就在这一页里），改日期不重新请求接口。
+$('dFrom').onchange=render;$('dTo').onchange=render;
+$('dClear').onclick=function(){$('dFrom').value='';$('dTo').value='';render();};
 // 2026-10-24：表格区高度自适应视口剩余空间 → 滚动发生在 .twrap 内部，配合 .twrap th 的 sticky 实现表头冻结
 // 2026-10-26 修（手机端排版错乱）：手机宽度下表格已改成卡片流、整页滚动，这里绝不能再锁高度。
 //   原来这里无条件写 w.style.maxHeight，手机上 innerHeight 减掉页头/统计/工具条后只剩 100 多 px，
@@ -4282,12 +4298,24 @@ function render(){
   renderRunbar();
   var all=buildRows();
   all.forEach(function(r){var m=computeMarks(r,susSet);r.markHtml=m.html;r.markText=m.text;});
+  // 2026-10-27：入池日期范围。added 形如 2026-10-27，统一截前 10 位后按字符串比大小（yyyy-mm-dd 正好可比）。
+  // 只填一端就只卡一端；两端填反了自动对调，避免用户以为筛出 0 个是 bug。
+  var dFrom=$('dFrom').value||'',dTo=$('dTo').value||'';
+  if(dFrom&&dTo&&dFrom>dTo){var dTmp=dFrom;dFrom=dTo;dTo=dTmp;$('dFrom').value=dFrom;$('dTo').value=dTo;}
+  var drngEl=$('drng');if(drngEl)drngEl.className='drng'+((dFrom||dTo)?' on':'');
   var q=($('q').value||'').trim().toLowerCase();
   var rows=all.filter(function(r){
     if(POOLF!=='all'&&r.pool!==POOLF)return false;
     // 2026-10-27：客服 / 套餐 两个下拉筛选（顶部所有统计都跟着它变）
     if(AGENTF&&String(r.e.agent||'')!==AGENTF)return false;
     if(PLANF&&String(r.e.plan||'')!==PLANF)return false;
+    // 2026-10-27：入池日期范围（没登记入池日的老号，一旦启用这个筛选就不显示 —— 它不落在任何区间内）
+    if(dFrom||dTo){
+      var ad=String(r.e.added||'').slice(0,10);
+      if(!ad)return false;
+      if(dFrom&&ad<dFrom)return false;
+      if(dTo&&ad>dTo)return false;
+    }
     if(!q)return true;
     var e=r.e;
     // 2026-10-25：搜索也能命中标记文本（如搜「绑错歌」「共创」「未开刷」直接筛出同类号）
