@@ -3806,8 +3806,14 @@ button.gray{background:#888}button.warn{background:#a32d2d}button:disabled{opaci
 .tools input{min-width:130px}.tools input#q{flex:1;min-width:160px}
 /* 2026-10-27 二次改（用户要求）：不要单独的「入池范围」控件，
    就在原来那个单日期后面再放一个日期，两个框连起来当一个日期范围用。 */
-.dr{display:inline-flex;align-items:center;gap:3px}
+.dr{display:inline-flex;align-items:center;gap:3px;background:#f5f6f8;border:1px solid #e8eaee;border-radius:8px;padding:2px 6px}
 .dr em{font-style:normal;color:#aab4c0;font-size:12px}
+.dr input{border:1px solid #ddd;border-radius:6px;padding:5px 6px;font-size:12.5px;min-width:118px;background:#fff}
+.dr .dn{font-style:normal;font-size:11.5px;color:#3b6d11;font-weight:700;padding:0 2px;display:none}
+.dr .dx{cursor:pointer;color:#999;font-size:15px;padding:0 4px;line-height:1;user-select:none;display:none}
+.dr .dx:hover{color:#a32d2d}
+.dr.on{background:#f2f7ea;border-color:#cfe0b4}
+.dr.on .dn,.dr.on .dx{display:inline}
 .tab{padding:8px 14px;border-radius:8px;background:#eee;color:#555;cursor:pointer;font-size:13px}
 .tab.on{background:#3b6d11;color:#fff}
 .twrap{overflow:auto;max-height:calc(100vh - 170px);border:1px solid #eee;border-radius:10px}
@@ -3868,8 +3874,9 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
   .tools{gap:6px;margin-bottom:8px}
   .tools input,.tools select,.tools button,.mini{padding:8px 10px;font-size:12.5px}
   /* 手机端：两个日期框平分一行，否则各自换行会顶掉半屏 */
-  .dr{width:100%;justify-content:space-between}
+  .dr{width:100%;flex:1 1 100%;justify-content:space-between;padding:3px 5px}
   .dr input{flex:1;min-width:0;padding:7px 4px;font-size:12px}
+  .dr .dn{flex:0 0 auto}
   .runbar{gap:6px;margin-bottom:10px}
   .rb{min-width:0;flex:1 1 100%;padding:7px 10px;font-size:11.5px}
   .twrap{border:0;border-radius:0;max-height:none!important;height:auto!important;overflow:visible;background:transparent}
@@ -3946,7 +3953,7 @@ a.song{color:#3b6d11;text-decoration:none;border-bottom:1px dotted #3b6d11}
     <span class="tab on" data-p="all">全部</span><span class="tab" data-p="hz">主群</span><span class="tab" data-p="dz">定制群</span>
     <select id="fagent" title="按客服筛选（顶部套餐汇总、所有统计都跟着变）"><option value="">客服：全部</option></select>
     <select id="fplan" title="按套餐筛选"><option value="">套餐：全部</option></select>
-    <span class="dr" title="日期范围：左边起始日、右边结束日（含）。两列 650 进度分别是这两天的快照，中间那列是两者之差。只填一个也行：只填左边 = 从这天到今天，只填右边 = 拿它跟它前一天比。"><input type="date" id="date" title="起始日（含）"><em>~</em><input type="date" id="dateTo" title="结束日（含）"></span>
+    <span class="dr" id="dr" title="入池日期范围：只看这段时间登记进池的号。只填一端也行（只填左边=这天及以后，只填右边=这天及以前），两边都空=全部。清空点右边的 ×"><input type="date" id="date" title="入池起始日（含）"><em>~</em><input type="date" id="dateTo" title="入池结束日（含）"><i class="dn" id="dn"></i><span class="dx" id="dClear" title="清除入池日期范围">×</span></span>
     <input id="q" placeholder="搜索：账号 / 邮箱 / UID / 歌曲ID / 客服">
     <select id="sort"><option value="default">排序：默认</option><option value="delta">排序：日涨幅↓</option><option value="rate">排序：今日进度↓</option></select>
     <button class="mini" id="btnCsv">导出CSV</button>
@@ -4078,7 +4085,9 @@ $('lp').onkeydown=function(e){if(e.key==='Enter')login();};
 $('lu').onkeydown=function(e){if(e.key==='Enter')$('lp').focus();};
 $('btnOut').onclick=function(){dropTok();location.reload();};
 $('btnRefresh').onclick=loadData;
-$('date').onchange=loadData;$('dateTo').onchange=loadData;
+// 2026-10-27 21:05：入池筛选是纯前端，改日期直接 render，不再重新请求接口（秒出）
+$('date').onchange=render;$('dateTo').onchange=render;
+$('dClear').onclick=function(){$('date').value='';$('dateTo').value='';render();};
 $('q').oninput=render;$('sort').onchange=render;
 $('fagent').onchange=function(){AGENTF=this.value;render();};
 $('fplan').onchange=function(){PLANF=this.value;render();};
@@ -4147,31 +4156,28 @@ function applyRole(role){
     }
   }
 }
-// 2026-10-27：日期范围 = 顶部的两个日期框（左边起始、右边结束）。规则：
-//   · 两个都空 → 昨天 ~ 今天（跟改动前的单日视图完全一样）
-//   · 只填左边 → 从这天到今天
-//   · 只填右边 → 拿它跟它前一天比（等于「单看这一天」）
-//   · 填反了自动对调；两边填成同一天也按「该日 vs 前一天」算，避免全员 0 的白看
-// 归一化结果直接写回两个输入框，用户能看到服务器究竟按哪两天算。
-function rangeOf(){
-  var a=$('date').value||'',b=$('dateTo').value||'',t=todayBJ();
-  if(!a&&!b){b=t;a=dMinus(t,1);}
-  else if(a&&!b){b=t;}
-  else if(!a&&b){a=dMinus(b,1);}
-  if(a>b){var x=a;a=b;b=x;}
-  if(a===b)a=dMinus(b,1);
-  $('date').value=a;$('dateTo').value=b;
+// 2026-10-27 21:05 三次改：顶部两个日期框 = **入池日期范围**（不是快照日期）。
+// 上一版把它们当「650 快照取哪两天」，结果用户选完区间表格几乎没变化 —— 因为两天快照本来
+// 就长得差不多。改成按账号的 added（入池日）筛，行数立刻能看出差别。
+//   · 两个都空 → 全部（跟最早的单日视图一样，不筛）
+//   · 只填左边 → 这天及以后入池的
+//   · 只填右边 → 这天及以前入池的
+//   · 填反了自动对调（写回输入框，让用户看见实际生效的范围）
+// 650 进度两列固定「昨天 vs 今天」，不再跟日期框联动。
+function drngOf(){
+  var a=$('date').value||'',b=$('dateTo').value||'';
+  if(a&&b&&a>b){var x=a;a=b;b=x;$('date').value=a;$('dateTo').value=b;}
   return {from:a,to:b};
 }
 function loadData(){
   var t=JSON.parse(TOKEN||'{}');
-  var rg=rangeOf();
   $('btnRefresh').disabled=true;
-  api('/api/console/data',{user:t.user,pass:t.pass,date:rg.to,prevDate:rg.from}).then(function(o){
+  // 2026-10-27 21:05：不传 date/prevDate —— 后端默认就是「昨天 vs 今天」。
+  // 日期框改成筛入池日期了，再往这里塞会把筛选值污染成快照日期。
+  api('/api/console/data',{user:t.user,pass:t.pass}).then(function(o){
     $('btnRefresh').disabled=false;
     if(!o.ok){$('lm').textContent=o.d.message||'请重新登录';$('lm').className='msg err';$('loginBox').hidden=false;$('mainBox').hidden=true;return;}
     DATA=o.d;
-    $('date').value=DATA.prevDate||rg.from;$('dateTo').value=DATA.date||rg.to;
     applyCfg(DATA.cfg);           // 客服/套餐下拉 + 汇总口径
     applyRole(DATA.role);         // 满权限 / 只读（服务端 data 里带，刷新一次就恢复正确权限）
     render();fitTable();
@@ -4321,21 +4327,16 @@ function computeMarks(r, susSet){
 // 2026-10-27 二次改：两列进度跟着日期范围换名字。跨度正好 1 天（就是原来「昨天→今天」）保持
 // 原来的「昨日 / 今日 / 较昨日」；跨度大于 1 天改成「起始 / 结束 / 区间变化」——
 // 否则拿 10-01 和 10-27 比还叫什么「较昨日」，标题就在撒谎。
+// 2026-10-27 21:05：日期框改成筛入池日期后，650 两列固定「昨天 vs 今天」，名字不再变。
+// 保留这个函数只为把真实日期写进表头 title（鼠标悬停能确认看的是哪两天）。
 var LB_A='昨日650',LB_B='今日650',LB_D='较昨日';
 function rangeLabels(){
   var a=(DATA&&DATA.prevDate)||'',b=(DATA&&DATA.date)||'';
-  var one=(a&&b)?(a===dMinus(b,1)):true;
-  LB_A=one?'昨日650':'起始650';
-  LB_B=one?'今日650':'结束650';
-  LB_D=one?'较昨日':'区间变化';
   var thA=$('thA'),thB=$('thB'),thD=$('thD');
-  if(thA){thA.innerHTML=one?'昨日<br>650进度':'起始<br>650进度';
-    thA.title='起始日 '+(a||'')+' 快照里的 650 任务完成度（近30日有效播放，100%=已达标）';}
-  if(thB){thB.innerHTML=one?'今日<br>650进度':'结束<br>650进度';
-    thB.title='结束日 '+(b||'')+' 快照里的 650 任务完成度（近30日有效播放，100%=已达标）';}
-  if(thD){thD.textContent=LB_D;
-    thD.title=(a&&b?(a+' → '+b+'，'):'')+'结束日650进度 - 起始日650进度；红色=涨，绿色=跌，0=这段时间没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）';}
-  return one;
+  if(thA){thA.title='昨日（'+(a||'')+'）快照里的 650 任务完成度（近30日有效播放，100%=已达标）';}
+  if(thB){thB.title='今日（'+(b||'')+'）快照里的 650 任务完成度（近30日有效播放，100%=已达标）';}
+  if(thD){thD.title=(a&&b?(a+' → '+b+'，'):'')+'今日650进度 - 昨日650进度；红色=涨，绿色=跌，0=今天没动，灰色「周期归零」=换新周期导致的 100→0（不是掉量）';}
+  return true;
 }
 function render(){
   if(!DATA)return;
@@ -4345,16 +4346,28 @@ function render(){
   var all=buildRows();
   all.forEach(function(r){var m=computeMarks(r,susSet);r.markHtml=m.html;r.markText=m.text;});
   var q=($('q').value||'').trim().toLowerCase();
+  // 2026-10-27 21:05：入池日期范围（纯前端过滤，不重新请求接口）。
+  // added 形如 2026-10-27，截前 10 位后按字符串比大小（yyyy-mm-dd 正好可比）。
+  var rg=drngOf(),rOn=!!(rg.from||rg.to);
+  var drEl=$('dr');if(drEl)drEl.className='dr'+(rOn?' on':'');
   var rows=all.filter(function(r){
     if(POOLF!=='all'&&r.pool!==POOLF)return false;
     // 2026-10-27：客服 / 套餐 两个下拉筛选（顶部所有统计都跟着它变）
     if(AGENTF&&String(r.e.agent||'')!==AGENTF)return false;
     if(PLANF&&String(r.e.plan||'')!==PLANF)return false;
+    // 入池日期范围：没登记入池日的老号，一旦启用这个筛选就不显示（它不落在任何区间内）
+    if(rOn){
+      var ad=String(r.e.added||'').slice(0,10);
+      if(!ad)return false;
+      if(rg.from&&ad<rg.from)return false;
+      if(rg.to&&ad>rg.to)return false;
+    }
     if(!q)return true;
     var e=r.e;
     // 2026-10-25：搜索也能命中标记文本（如搜「绑错歌」「共创」「未开刷」直接筛出同类号）
     return ((e.name||'')+' '+(e.email||'')+' '+(e.uid||'')+' '+(e.song||'')+' '+(e.agent||'')+' '+(e.plan||'')+' '+r.markText).toLowerCase().indexOf(q)>=0;
   });
+  var dnEl=$('dn');if(dnEl)dnEl.textContent=rOn?('筛出 '+rows.length+' 个'):'';
   var s=$('sort').value;
   if(s==='delta')rows.sort(function(x,y){return (y.delta==null?-999:y.delta)-(x.delta==null?-999:x.delta);});
   else if(s==='rate')rows.sort(function(x,y){return ((y.a&&y.a.rate)||-1)-((x.a&&x.a.rate)||-1);});
@@ -4640,9 +4653,7 @@ $('cSave').onclick=function(){
 };
 $('btnCsv').onclick=function(){
   var rows=[[ '池','账号','客服','套餐','UID','歌曲ID','时长(秒)',
-    (LB_A==='昨日650'?'昨进度':'起始日进度'),
-    (LB_B==='今日650'?'今进度':'结束日进度'),
-    (LB_D==='较昨日'?'日环比':'区间变化'),
+    '昨进度','今进度','日环比',
     '近30日播放','入池','有效期','邮箱','标记']];
   buildRows().forEach(function(r){
     var e=r.e;
@@ -4658,9 +4669,9 @@ $('btnCsv').onclick=function(){
   document.body.appendChild(a);a.click();document.body.removeChild(a);
 };
 (function(){
-  // 2026-10-27 二次改：默认「昨天 ~ 今天」= 跟改动前的单日视图一模一样（列名也还是昨日/今日）。
-  $('dateTo').value=todayBJ();
-  $('date').value=dMinus($('dateTo').value,1);
+  // 2026-10-27 21:05：入池日期范围默认留空 = 全部号（不筛）。要看某段就自己填。
+  $('dateTo').value='';
+  $('date').value='';
   // 2026-10-25：#pw= 免密改成「可重复触发」。旧版只在脚本初次执行时读一次 hash，而 CK助手再点
   // 「进阶控制台」时浏览器通常已经开着 /console 标签 —— 那只是同页内 hash 变化，脚本不会重跑，
   // 免密不执行 → 刚在 EXE 输过口令，网页又弹登录框（等于要输两遍）。现在抽成函数并监听 hashchange。
