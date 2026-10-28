@@ -1,10 +1,11 @@
 name: d1-backup
 
-# D1 账号池每周自动备份（2026-10-22 新增）
+# D1 账号池每周自动备份（2026-10-22 新增；2026-10-28：日常每轮 relay 前的快照见 run.yml 的
+# d1-prebackup-* artifact，这里保留每周一份进 git 作为长期留档，两者互为兜底）
 # 为什么需要：2026-10-22 起账号池的权威数据只在 D1（KV 是双写备份，Secrets 分片已降级为只读回退）。
 # 备份内容：accounts（含 CK，恢复必需）+ 近 60 天 snapshots + kv_misc + dead_log 流水。
 # 落盘形式：openssl aes-256-cbc 加密后提交到 backup/（仓库是 public，绝不放明文），
-#           只保留最近 8 份；同时传一份 artifact 存 90 天。
+#           只保留最近 15 份（约 4 个月）；同时传一份 artifact 存 90 天。
 # 恢复方式：workflow d1-restore.yml（手动触发，输入文件名），或本地 python cron-relay/d1_restore.py。
 
 on:
@@ -32,10 +33,10 @@ jobs:
           BACKUP_PASS: ${{ secrets.BACKUP_PASS }}
         run: python3 d1_backup.py
 
-      - name: 只保留最近 8 份
+      - name: 只保留最近 15 份（约 4 个月）
         run: |
           mkdir -p backup
-          ls -1t backup/*.enc 2>/dev/null | tail -n +9 | xargs -r rm -f
+          ls -1t backup/*.enc 2>/dev/null | tail -n +16 | xargs -r rm -f
           ls -lh backup/ | tail -10
 
       - name: 提交进仓库
