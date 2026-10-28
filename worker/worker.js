@@ -4080,7 +4080,7 @@ function loadData(){
   // 日期框改成筛入池日期了，再往这里塞会把筛选值污染成快照日期。
   api('/api/console/data',{user:t.user,pass:t.pass}).then(function(o){
     $('btnRefresh').disabled=false;
-    if(!o.ok){dropTok();TOKEN=null;$('lm').textContent=o.d.message||'请重新登录';$('lm').className='msg err';$('loginBox').hidden=false;$('mainBox').hidden=true;return;}
+    if(!o.ok){if(((o.d&&o.d.message)||'').indexOf('密码')>=0){dropTok();TOKEN=null;}$('lm').textContent=o.d.message||'请重新登录';$('lm').className='msg err';$('loginBox').hidden=false;$('mainBox').hidden=true;return;}
     DATA=o.d;
     applyCfg(DATA.cfg);           // 客服/套餐下拉 + 汇总口径
     applyRole(DATA.role);         // 满权限 / 只读（服务端 data 里带，刷新一次就恢复正确权限）
