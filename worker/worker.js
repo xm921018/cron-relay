@@ -3949,29 +3949,38 @@ function dMinus(day,n){
   return d.toISOString().slice(0,10);
 }
 function api(ep,body){return fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});});}
-// 2026-10-27 二次改（用户要求：满权限和只读，每次都要输入）：控制台口令一律不记忆。
-// 起因：LOCALSTORAGE 里那个 30 天 token，把 EXE/APK 费劲做到的"满权限口令不落盘"又存回去了
-// —— 点开 /console 直接进，看着像没设口令。现在 TOKEN 只活在本页内存里，刷新或重开就没了。
-// 历史版本存过的残留（含口令明文）在 load() 里顺手删掉，升级后第一次打开自动清干净。
+// 2026-10-28（用户要求：输一次就一直有效）：控制台口令重新落盘记忆。
+// 上一版是「每次都输」，理由是别把 24 位口令明文留在浏览器里；实际用下来太麻烦，改回记忆。
+// 现在：登录成功 → 把 {user,pass} 连带 role 一起存进 localStorage 的 consToken。
+//   存 role 是为了刷新时立刻恢复「满权限 / 只读」标签，不用等 data 回来再闪一下。
+// 失效兜底：KV 里换过口令后，旧 token 请求 /api/console/data 会 403 →
+//   loadData 里 dropTok() 并弹回登录框，不会卡在「一直自动登录失败」的死循环。
+// 想主动清掉：点右上「退出」，走 dropTok() 删本地 token。
 var TOK_KEY='consToken';
-function save(t){
-  TOKEN=t;                                            // 只在内存里，本页后续 api 调用够用
-  try{localStorage.removeItem(TOK_KEY);}catch(e){}    // 清历史残留，绝不写盘
+function save(t,role){
+  TOKEN=t;
+  var rec={t:t,role:role||""};
+  try{localStorage.setItem(TOK_KEY,JSON.stringify(rec));}catch(e){}
   try{sessionStorage.removeItem(TOK_KEY);}catch(e){}
 }
 function load(){
-  try{localStorage.removeItem(TOK_KEY);}catch(e){}    // 老版本存的 30 天 token 就地删除
-  try{sessionStorage.removeItem(TOK_KEY);}catch(e){}
-  return null;                                        // 永不恢复 → 每次都显示登录框
+  try{
+    var raw=localStorage.getItem(TOK_KEY);
+    if(!raw)return null;
+    var rec=JSON.parse(raw);
+    if(!rec||!rec.t)return null;              // 老版本残留（直接存 {user,pass}）= 认不出，重登一次
+    var p=JSON.parse(rec.t);                  // token 本身仍是 {user,pass} 的 JSON 串
+    if(!p||!p.user||!p.pass)return null;
+    return {t:rec.t,role:rec.role||""};
+  }catch(e){return null;}
 }
-function dropTok(){try{localStorage.removeItem(TOK_KEY);}catch(e){}try{sessionStorage.removeItem(TOK_KEY);}catch(e){}}
 function login(){
   var u='xx1031',p=$('lp').value;   // 2026-10-25：账号固定，登录框只留口令一个输入框
   if(!u||!p){$('lm').textContent='请输入账号和密码';$('lm').className='msg err';return;}
   $('lbtn').disabled=true;
   api('/api/console/login',{user:u,pass:p}).then(function(o){
     $('lbtn').disabled=false;
-    if(o.ok&&o.d.ok){TOKEN=JSON.stringify({user:u,pass:p});save(TOKEN);$('loginBox').hidden=true;$('mainBox').hidden=false;applyRole(o.d.role);loadData();}
+    if(o.ok&&o.d.ok){TOKEN=JSON.stringify({user:u,pass:p});save(TOKEN,o.d.role);$('loginBox').hidden=true;$('mainBox').hidden=false;applyRole(o.d.role);loadData();}
     else{$('lm').textContent=(o.d&&o.d.message)||'登录失败';$('lm').className='msg err';}
   }).catch(function(){$('lbtn').disabled=false;$('lm').textContent='网络错误';$('lm').className='msg err';});
 }
@@ -4071,7 +4080,7 @@ function loadData(){
   // 日期框改成筛入池日期了，再往这里塞会把筛选值污染成快照日期。
   api('/api/console/data',{user:t.user,pass:t.pass}).then(function(o){
     $('btnRefresh').disabled=false;
-    if(!o.ok){$('lm').textContent=o.d.message||'请重新登录';$('lm').className='msg err';$('loginBox').hidden=false;$('mainBox').hidden=true;return;}
+    if(!o.ok){dropTok();TOKEN=null;$('lm').textContent=o.d.message||'请重新登录';$('lm').className='msg err';$('loginBox').hidden=false;$('mainBox').hidden=true;return;}
     DATA=o.d;
     applyCfg(DATA.cfg);           // 客服/套餐下拉 + 汇总口径
     applyRole(DATA.role);         // 满权限 / 只读（服务端 data 里带，刷新一次就恢复正确权限）
@@ -4580,7 +4589,7 @@ $('btnCsv').onclick=function(){
     $('lm').textContent='正在自动登录…';$('lm').className='msg';
     api('/api/console/login',{user:'xx1031',pass:pw}).then(function(o){
       if(o.ok&&o.d.ok){
-        TOKEN=JSON.stringify({user:'xx1031',pass:pw});save(TOKEN);
+        TOKEN=JSON.stringify({user:'xx1031',pass:pw});save(TOKEN,o.d.role);
         lb.hidden=true;mb.hidden=false;applyRole(o.d.role);loadData();
       }else{
         lb.hidden=false;mb.hidden=true;
@@ -4594,8 +4603,8 @@ $('btnCsv').onclick=function(){
   }
   window.addEventListener('hashchange',function(){hashLogin();});
   if(hashLogin())return;                    // 带 #pw= 时优先免密，不看缓存
-  var t=load();
-  if(t){TOKEN=t;$('loginBox').hidden=true;$('mainBox').hidden=false;loadData();}
+  var s=load();
+  if(s){TOKEN=s.t;applyRole(s.role);$('loginBox').hidden=true;$('mainBox').hidden=false;loadData();}
 })();
 </script></body></html>`;
 
