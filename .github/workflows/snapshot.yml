@@ -6,8 +6,14 @@ name: snapshot
 #   2026-10-28 加门闩：主路径早于北京 09:10 结束时，等到 09:10 再采。
 #     原因：网易工作台当日数据 9 点过后才结算刷新，采早了整池都是旧值
 #     （10-28 实锤：relay 08:33 结束即采，361 条快照全是 9 点前的旧数据，事后只能整班重跑）。
-#     规则 = 采集时刻取 max(relay 结束时刻, 09:10)。只在主路径 workflow_run 生效，
+#     规则 = 采集时刻取 max(relay 结束时刻, 门闩)。只在主路径 workflow_run 生效，
 #     10:00 / 12:00 兜底不受影响。等待放在 plan 作业里（仅 1 个 runner 空转，分片睡醒后正常并发）。
+#   2026-10-29 门闩 09:10 → 10:05：09:10 仍未结算完 —— 实测当天 358 个可比号里 261 个（73%）
+#     650 进度一格没动（平时只有 12~24%），而同一天播放量 rpc30 有 73% 的号在涨、中位 +21
+#     （和前两天的 62% 同档），650 均值只涨了 +0.77 个点（昨天 +4.50、前天 +6.10）。
+#     即「播放照进、650 没入账」，纯采集时刻早于网易结算。10 点后一般已完成，故推到 10:05，
+#     留 5 分钟缓冲，避免正好卡在网易刷新的那一瞬间。等待改成循环，不会再被单次 sleep 截断。
+#     （兜底链路 10:00 / 12:00 仍按「今天已采过就跳过」去重，当天不会因此多采一次。）
 #
 # 为什么主路径要从「定时」改成「relay 跑完触发」：
 #   控制台「今日650进度」要的是「全池同一时刻、同一结算状态」的数据。凌晨播放轮是边播边采，
@@ -112,19 +118,30 @@ jobs:
               return False
 
 
-          # 2026-10-28 门闩（方案2）：主路径早于北京 09:10 结束时等到 09:10 再采（网易 9 点后才结算）。
+          # 2026-10-28 门闩（方案2）：主路径早于门闩时刻结束时，等到门闩再采（网易结算完才准）。
+          # 2026-10-29：门闩 09:10 → 10:05（09:10 实测只有 26% 的号拿到当日增量，见文件头说明）。
           # 上限 5h50m：relay 万一极早结束也不顶穿 plan 作业 6h 默认超时；
           # 真被超时掐掉也只是本班不采（run 结论 failure），10:00 兜底的去重按失败放行，链路仍闭环。
+          # sleep 改成循环：原来一次性 sleep(min(差值,21000)) 会被截断后直接往下走，
+          # 门闩推晚到 10:05 以后「relay 结束得早」就可能提前开跑，循环保证没到点就不采。
           if os.environ.get("EVENT_NAME") == "workflow_run":
               now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-              gate = now.replace(hour=9, minute=10, second=0, microsecond=0)
-              if now < gate:
-                  wait = min(int((gate - now).total_seconds()), 21000)
-                  print("relay 结束于北京 %s，早于 09:10（网易结算前），等待 %d 分钟后再采。"
-                        % (now.strftime("%H:%M"), wait // 60))
-                  time.sleep(wait)
+              gate = now.replace(hour=10, minute=5, second=0, microsecond=0)
+              if now >= gate:
+                  print("relay 结束于北京 %s，已过 10:05 门闩，立即采集。" % now.strftime("%H:%M"))
               else:
-                  print("relay 结束于北京 %s，已过 09:10，立即采集。" % now.strftime("%H:%M"))
+                  print("relay 结束于北京 %s，早于 10:05 门闩（网易当日数据可能还没结算完），等门闩到点再采。"
+                        % now.strftime("%H:%M"))
+                  spent = 0
+                  while now < gate and spent < 21000:
+                      wait = max(1, min(int((gate - now).total_seconds()), 900, 21000 - spent))
+                      time.sleep(wait)
+                      spent += wait
+                      now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+                  if now >= gate:
+                      print("门闩到点（北京 %s），开始分片采集。" % now.strftime("%H:%M"))
+                  else:
+                      print("::warning::已等满 %d 分钟上限仍未到 10:05，先采（数据可能偏早）。" % (spent // 60))
 
           per = max(1, int(os.environ.get("ACCOUNTS_PER_SLICE", "12") or 12))
           hi = max(1, int(os.environ.get("MAX_SLICES", "40") or 40))
