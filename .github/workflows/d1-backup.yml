@@ -36,7 +36,10 @@ jobs:
       - name: 只保留最近 15 份（约 4 个月）
         run: |
           mkdir -p backup
-          ls -1t backup/*.enc 2>/dev/null | tail -n +16 | xargs -r rm -f
+          # 按文件名（d1-YYYY-MM-DD）排序，不能用 ls -1t：
+          # Actions 每次全新 checkout，所有文件的 mtime 都是检出时刻（同一秒），
+          # 排序结果不确定，攒到 16 份后可能删掉最新的那份、留下最老的。
+          ls -1 backup/*.enc 2>/dev/null | sort | head -n -15 | xargs -r rm -f
           ls -lh backup/ | tail -10
 
       - name: 提交进仓库
