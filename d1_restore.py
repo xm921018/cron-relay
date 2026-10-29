@@ -4,7 +4,10 @@
 用途：D1 被误删、写坏、或换账号重建时，把某一天的加密备份灌回去。
 
 安全约束：
-  - 只写 accounts 表（唯一不可再生的数据），用 INSERT OR REPLACE（不会重复、不会冲突）；
+  - 只写 accounts 表（唯一不可再生的数据）；
+    2026-10-29：INSERT OR REPLACE 改成 INSERT ... ON CONFLICT(pool,uid) DO UPDATE，
+    并且只覆盖「备份里确实存在」的列 —— 否则将来给 accounts 加列之后，用旧备份恢复一次
+    就会把新列全清空（OR REPLACE = 整行替换，缺列即 NULL）；
   - 默认 dry-run，只打印将要写入多少条，加 --write 才真的写；
   - 不会删除库里现有的号：备份里有、库里也多出来的号会留着（宁可多不可少）。
 
@@ -29,7 +32,8 @@ TOK = (os.environ.get("CF_TOKEN", "") or "").strip()
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36"
 COLS = ["pool", "uid", "name", "song", "ck", "added", "exp", "no_listen",
         "email", "updated_at", "note", "agent", "plan"]
-BATCH = 7   # 7 行 × 13 列 = 91 个绑定参数，低于 D1 单查询 100 参数上限
+BATCH = 7   # 上限值：7 行 × 13 列 = 91 个绑定参数，低于 D1 单查询 100 参数上限
+            # 实际每批行数按「列数」重算（见 main），备份列少时可以更宽
 
 
 def api(sql, params=None):
@@ -83,19 +87,36 @@ def main():
     if not write:
         print("[restore] dry-run（未写入）。确认无误后加 --write")
         return
+    # 列清单按「备份里实际出现过哪些键」推出来（扫前 200 行足够，同一次导出行结构一致）。
+    # COLS 只作为顺序模板；备份里没有的列不出现在 SET 里 → 库里该列保持原值。
+    present = set()
+    for r in accs[:200]:
+        present.update(r.keys())
+    use_cols = [c for c in COLS if c in present]
+    for req in ("pool", "uid"):
+        if req not in use_cols:
+            raise SystemExit(f"备份里缺 {req} 列，无法恢复")
+    missing = [c for c in COLS if c not in use_cols]
+    if missing:
+        print("[restore] 备份里没有这些列，恢复时保持库里原值不动：" + ", ".join(missing))
+    sets = ",".join(f"{c}=excluded.{c}" for c in use_cols if c not in ("pool", "uid"))
+    batch = max(1, 100 // max(1, len(use_cols)))
+    print(f"[restore] 覆盖 {len(use_cols)} 列，每批 {batch} 行")
+
     done = 0
-    for i in range(0, len(accs), BATCH):
-        chunk = accs[i:i + BATCH]
+    for i in range(0, len(accs), batch):
+        chunk = accs[i:i + batch]
         ph = []
         vals = []
         for r in chunk:
-            ph.append("(" + ",".join(["?"] * len(COLS)) + ")")
-            for c in COLS:
+            ph.append("(" + ",".join(["?"] * len(use_cols)) + ")")
+            for c in use_cols:
                 v = r.get(c)
                 if c == "no_listen" and v is not None:
                     v = 1 if v in (1, True, "1", "true") else 0
                 vals.append(v)
-        sql = (f"INSERT OR REPLACE INTO accounts ({','.join(COLS)}) VALUES " + ",".join(ph))
+        sql = (f"INSERT INTO accounts ({','.join(use_cols)}) VALUES " + ",".join(ph)
+               + f" ON CONFLICT(pool,uid) DO UPDATE SET {sets}")
         api(sql, vals)
         done += len(chunk)
         print(f"[restore] {done}/{len(accs)}", flush=True)

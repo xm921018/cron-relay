@@ -1521,6 +1521,10 @@ function beijingDate() {
 function isExpiredEntry(e) {
   return !!(e && e.exp && e.exp !== 'forever' && String(e.exp) < beijingDate());
 }
+// 2026-10-29：单列 exp 的到期判定（给 D1 查重结果 / KV 回退路径用）
+function isExpiredExp(exp) {
+  return !!(exp && exp !== 'forever' && String(exp) < beijingDate());
+}
 function expDaysLeft(e) {
   if (!e || !e.exp || e.exp === 'forever') return Infinity;
   return Math.round((new Date(e.exp + 'T00:00:00Z') - new Date(beijingDate() + 'T00:00:00Z')) / 86400000);
@@ -1811,15 +1815,35 @@ async function addEntry(entry) {
     // uid 为空的（用 name 占位的老号）只能按 name 查。不带 uid 时不要拼那个 ? 占位符，
     // 否则得传哨兵值，而 D1 绑定含 NUL 的字符串会报错 → 白走一次 KV 回退。
     const dup = uidKey
-      ? await d1All('SELECT uid FROM accounts WHERE pool=? AND (uid=? OR name=?) LIMIT 1',
+      ? await d1All('SELECT uid,exp FROM accounts WHERE pool=? AND (uid=? OR name=?) LIMIT 1',
                     [POOL_NAME, uidKey, String(entry.name || '')])
-      : await d1All('SELECT uid FROM accounts WHERE pool=? AND name=? LIMIT 1',
+      : await d1All('SELECT uid,exp FROM accounts WHERE pool=? AND name=? LIMIT 1',
                     [POOL_NAME, String(entry.name || '')]);
     if (dup === null) {
       console.error('D1 查重失败，回退 KV 全量查重');
     } else {
-      if (dup.length) {
+      // 2026-10-29：查重带上 exp —— 已过有效期的号允许重新登记（= 续费）。
+      // 以前不看 exp，直接回「该账号已登记过」，而每天并没有地方清到期号（pruneExpired 只挂在
+      // 旧号池管理工具上），等于到期之后号主无论怎么操作都无法再用这个号。
+      if (dup.length && !isExpiredExp(dup[0] && dup[0].exp)) {
         return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
+      }
+      if (dup.length) {
+        // 过期覆盖：旧的 KV 键与 D1 行都清掉，避免「旧键按 name / 新键按 uid」并存两份。
+        for (const k of [ekey,
+                         (dup[0] && dup[0].uid != null) ? 'entry:u' + String(dup[0].uid) : '',
+                         entry.name ? 'entry:n' + encodeURIComponent(String(entry.name)) : '']) {
+          if (!k) continue;
+          try { await POOL.delete(k); } catch (e) {}
+        }
+        if (uidKey) {
+          try { await d1Run('DELETE FROM accounts WHERE pool=? AND (uid=? OR name=?)',
+                            [POOL_NAME, uidKey, String(entry.name || '')]); } catch (e) {}
+        } else {
+          try { await d1Run('DELETE FROM accounts WHERE pool=? AND name=?',
+                            [POOL_NAME, String(entry.name || '')]); } catch (e) {}
+        }
+        console.log('到期号重新登记（续费）:', String(entry.name || uidKey));
       }
       // KV 仍写一份：D1 万一回滚，KV 里必须是完整数据
       await POOL.put(ekey, JSON.stringify(entry));
@@ -1845,13 +1869,24 @@ async function addEntry(entry) {
   }
 
   // ---- KV 回退路径（D1 未绑定或查询失败）----
-  if (await POOL.get(ekey)) {
-    return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
+  // 2026-10-29：与 D1 路径同口径 —— 已过有效期的旧登记不算「已登记过」，允许覆盖。
+  const kvOld = await POOL.get(ekey);
+  if (kvOld) {
+    let oldExp = '';
+    try { oldExp = (JSON.parse(kvOld) || {}).exp || ''; } catch (e) {}
+    if (!isExpiredExp(oldExp)) {
+      return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
+    }
+    try { await POOL.delete(ekey); } catch (e) {}
   }
   const deadLog = new Set(await getDeadLog());
   const master = await mergePool();
+  const staleKeys = [];                        // 到期旧条目：允许被这次登记覆盖，稍后清掉
   for (const e of master) {
     if (deadLog.has(entryKeyOf(e))) continue;   // 墓碑内的是缓存残留（刚被清理），不算已登记
+    const same = (uidKey && e.uid != null && String(e.uid) === uidKey)
+      || (entry.name && e.name === entry.name);
+    if (same && isExpiredExp(e && e.exp)) { staleKeys.push(entryKeyOf(e)); continue; }
     if (uidKey && e.uid != null && String(e.uid) === uidKey) {
       return { ok: false, msg: '该账号已登记过（每个账号限登记一首歌），无需重复登记。' };
     }
@@ -1859,6 +1894,8 @@ async function addEntry(entry) {
       return { ok: false, msg: '该手机号/账号已登记过（每个账号限登记一首歌），无需重复登记。' };
     }
   }
+  for (const k of staleKeys) { try { await POOL.delete(k); } catch (e) {} }
+  if (staleKeys.length) console.log('到期号重新登记（续费，KV 路径）:', String(entry.name || uidKey));
   // 权威写入：只写自己的独立键，永远不会覆盖别人的登记
   await POOL.put(ekey, JSON.stringify(entry));
   // D1 影子库同步（2026-10-22）：失败只记日志，绝不影响登记结果
@@ -1873,7 +1910,7 @@ async function addEntry(entry) {
     }
   }
   // master 缓存尽力刷新（此写有竞态也无害：下次 mergePool 自愈）
-  const updated = master.concat([entry]);
+  const updated = master.filter(e => staleKeys.indexOf(entryKeyOf(e)) < 0).concat([entry]);
   // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
   await pushPool(updated);
   // 本分支是「D1 查重失败」才走到：如果只是查询超时（D1 仍可写），这次快照能补上新号；
@@ -2741,10 +2778,26 @@ async function handle(request) {
           await d1Run('UPDATE accounts SET suspect_at=? WHERE pool=? AND uid=?', [stamp, POOL_NAME, String(e.uid)]);
         }
       }
+      // 2026-10-29 修复「删失败也给号主发过期邮件」：
+      // 旧顺序是「先删 KV 键 → 再 d1Delete」，而 d1Delete 失败只 return false、不抛异常，
+      // 外层 try/catch 什么也拦不到，deleted 依旧原样返回全部名单。结果：D1 那行还在
+      //（下一次 mergePool 会从 D1 把它读回来、继续播放），号主却已收到「账号信息过期」。
+      // 现在顺序反过来：先删 D1，只有真删成功的才删 KV 键 / 进墓碑 / 计进 deleted / 发信。
+      const hasD1 = d1ok();
+      const delRes = await Promise.all(confirmed.map(async e => {
+        if (!hasD1) return { e: e, ok: true };      // D1 未绑定：纯 KV 模式，按成功处理
+        let ok = false;
+        try { ok = (await d1Delete(e)) === true; } catch (_e) { ok = false; }
+        return { e: e, ok: ok };
+      }));
+      const reallyGone = delRes.filter(x => x.ok).map(x => x.e);
+      const delFail = delRes.filter(x => !x.ok).map(x => x.e);
+      if (delFail.length) {
+        console.error('D1 删除失败（这些号保留在池内、不发信）: ' + delFail.map(e => e.name || e.uid).join('、'));
+      }
       // 删除走独立键（单键删除，无竞态），并记墓碑防缓存复活；再刷新 master 缓存
-      const deadEkeys = confirmed.map(e => entryKeyOf(e));
-      await Promise.all(confirmed.map(e => POOL.delete(entryKeyOf(e))));
-      try { await Promise.all(confirmed.map(e => d1Delete(e))); } catch (e) { console.error('D1 清理镜像失败:', e && e.message); }
+      await Promise.all(reallyGone.map(async e => { try { await POOL.delete(entryKeyOf(e)); } catch (_e) {} }));
+      const deadEkeys = reallyGone.map(e => entryKeyOf(e));
       if (deadEkeys.length) {
         try {
           const log = new Set(await getDeadLog());
@@ -2753,7 +2806,7 @@ async function handle(request) {
           await POOL.put('dead_log', JSON.stringify([...log].slice(-500)));
         } catch (e) {}
       }
-      await d1LogDead(confirmed, 'cookie_invalid');
+      await d1LogDead(reallyGone, 'cookie_invalid');
       const gone = new Set(deadEkeys);
       const after = master.filter(e => !gone.has(entryKeyOf(e)));
       // master 缓存不再回写（2026-10-22）：读者全走 D1，entry: 独立键才是权威
@@ -2762,9 +2815,13 @@ async function handle(request) {
       const nm = arr => arr.map(e => e.name || e.uid).join('、');
       // deleted：真正被删掉的号名。run.py 靠它决定「给谁发过期邮件」——
       // 只有删成功了才发，避免「邮件说已删除、号其实还在池里」。
-      const deleted = confirmed.map(e => e.name || String(e.uid));
+      const deleted = reallyGone.map(e => e.name || String(e.uid));
+      const failNote = delFail.length
+        ? `；${delFail.length} 个 D1 删除失败（${delFail.map(e => e.name || e.uid).join('、')}）仍留在池内，未发信，下轮会重试`
+        : '';
       return json({ ok: true, deleted: deleted,
-        message: `本次确认清理 ${confirmed.length} 个${confirmed.length ? '（' + nm(confirmed) + '）' : ''}；`
+        message: `本次确认清理 ${confirmed.length} 个${confirmed.length ? '（' + nm(confirmed) + '）' : ''}`
+        + `，实际删除 ${reallyGone.length} 个${failNote}；`
         + `新增疑似 ${suspects.length} 个（需下一轮再次判死才删除${suspects.length ? '：' + nm(suspects) : ''}），`
         + `剩余 ${after.length} 个。` });
     }
@@ -2883,7 +2940,13 @@ async function handle(request) {
         const peerPass = cleanKV(await POOL.get('PEER_PASS'));
         if (!peerPass || pass !== peerPass) return json({ message: '口令错误' }, 403, CORS);
       } else {
-        if (!c.groupPass || pass !== c.groupPass) return json({ message: '口令错误' }, 403, CORS);
+        // 2026-10-29：主群鉴权同时接受 ASSIGN_PASS。
+        // 以前只认 KV 里的 GROUP_PASS，而群口令机制早已取消（groupPassCheck 恒 true）——
+        // 哪天有人顺手把 KV 的 GROUP_PASS 删掉，凌晨整轮快照全部 403，而且只打印不告警。
+        // ASSIGN_PASS 是 GitHub Secret + KV 双份，是这里唯一稳定的口令来源。
+        if (!pass || (pass !== c.groupPass && pass !== c.assignPass)) {
+          return json({ message: '口令错误' }, 403, CORS);
+        }
       }
       const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date || '') ? body.date : beijingDate();
       const slice = String(body.slice == null ? 'x' : body.slice).replace(/[^\w-]/g, '').slice(0, 8) || 'x';
@@ -3452,8 +3515,15 @@ async function applyEntryEdit(body) {
     (body.name && String(e.name) === String(body.name)));
   if (!target) return json({ message: '没找到该账号（可能已被删除）' }, 404, CORS);
   if (body.action === 'delete') {
+    // 2026-10-29：改成「先删 D1，成功才删 KV」。旧顺序先删 KV，D1 删失败只打一行日志 →
+    // D1 那行还在，下一次 mergePool 会把它悄悄读回来（控制台已显示「已删除」），
+    // 而且通知队列照排，号主会收到「账号信息过期」。现在失败就直接报错返回，不留半删状态。
+    if (d1ok()) {
+      let ok = false;
+      try { ok = (await d1Delete(target)) === true; } catch (e) { ok = false; }
+      if (!ok) return json({ message: 'D1 删除失败，账号未删除，请稍后重试' }, 500, CORS);
+    }
     await POOL.delete(entryKeyOf(target));
-    try { await d1Delete(target); } catch (e) { console.error('D1 删除镜像失败:', e && e.message); }
     try {
       const log = new Set(await getDeadLog());
       log.add(entryKeyOf(target));
@@ -4659,6 +4729,17 @@ export default {
     globalThis.GH_REPO = env.GH_REPO;
     if (env.DB) globalThis.DB = env.DB;
     ctx.waitUntil(dispatchSnap650('all').catch(() => {}));
+    // 2026-10-29：到期号清理挪进每日 cron。
+    // 以前 pruneExpired 全项目只有 /api/pool（旧「号池管理后台」页面）一个调用点 ——
+    // 谁打开那个工具谁才清。后果三连：到期号一直挂在池里（只是不播放）；号主收不到
+    // 「账号信息过期」；重新登记被 addEntry 判成「已登记过」直接拒绝。这里每天清一次，
+    // 语义与工具里点一次完全一致（同样的墓碑、D1 删除、通知入队）。
+    ctx.waitUntil((async () => {
+      try {
+        const r = await pruneExpired();
+        if (r && r.count) console.log('scheduled 已清理到期账号 ' + r.count + ' 个');
+      } catch (e) { console.error('scheduled 清理到期账号失败:', (e && e.message) || e); }
+    })());
     // 2026-10-25：每天顺手补一批歌曲/账号元数据（控制台「共创歌曲 / 绑错歌」标签的数据源）。
     // 本地 IP 被网易限流，只能靠 Worker 出口；每天 30 个号 + 12 首歌，新号基本当天就能补上。
     ctx.waitUntil(backfillMeta().catch(() => {}));

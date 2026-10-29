@@ -136,7 +136,7 @@ def main():
 
     if "--no-encrypt" in sys.argv:
         print("[backup] 明文模式（仅排查用）：", gz_path)
-        print(f"::set-output name=file::{os.path.basename(gz_path)}")
+        # 2026-10-29：删掉 ::set-output（GitHub 2023 年已移除，纯 no-op 死代码）
         return
 
     pwd = (os.environ.get("BACKUP_PASS") or "").strip()
