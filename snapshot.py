@@ -84,6 +84,10 @@ SNAP_JOBS = _env_int("SNAP_JOBS", 1, 1, 999)
 TRIGGER_EVENT = os.environ.get("TRIGGER_EVENT", "").strip()
 GH_REPO_SLUG = os.environ.get("GH_REPO_SLUG", "").strip()
 GH_API_TOKEN = os.environ.get("GH_API_TOKEN", "").strip()
+# 强制补采（2026-10-29）：manual dispatch 勾 force 时传 1，跳过「今天已采过」去重。
+# 用途：当天主路径采早了（如 10-29 的 09:10 早批，73% 的号 650 没入账），想再采一次拿结算后的值。
+# 不加这个开关就只能等次日 —— 去重会把手动触发也挡掉。
+SNAP_FORCE = os.environ.get("SNAP_FORCE", "").strip().lower() in ("1", "true", "yes", "on")
 
 ASSIGN_PASS = os.environ.get("ASSIGN_PASS", "").strip() or os.environ.get("NB_PASS", "").strip()
 SNAP_PASS = os.environ.get("NB_PASS", "").strip()
@@ -195,7 +199,9 @@ def main():
         print("::error::缺 NB_PASS，无法上报快照")
         raise SystemExit(1)
 
-    if already_collected_today():
+    if SNAP_FORCE:
+        print("[650补采] 手动强制补采（SNAP_FORCE=1），跳过「今天已采过」去重。")
+    elif already_collected_today():
         return
 
     accs = load_pool()
