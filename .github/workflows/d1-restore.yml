@@ -2,9 +2,14 @@ name: d1-restore
 
 # D1 账号池手动恢复（危险操作，只手动触发，默认 dry-run）
 # 用法：Actions → d1-restore → Run workflow
-#   file:  备份文件名，例如 d1-2026-10-26.json.gz.enc（在仓库 backup/ 目录里）
-#   write: 输入 yes 才真正写入 D1；留空只做预演（打印将写入多少条）
-# 影响面：只 INSERT OR REPLACE accounts 表，不删除任何现有账号。
+#   file:   备份文件名，例如 d1-2026-10-26.json.gz.enc（在仓库 backup/ 目录里）
+#   tables: 要恢复哪些表，默认 accounts（与旧行为一致）
+#           all = schema + accounts + snapshots + kv_misc + dead_log（灾难重建用）
+#           也可写 accounts,snapshots,kv_misc,dead_log,schema 精确指定
+#   write:  输入 yes 才真正写入 D1；留空只做预演（打印将写入多少条）
+# 影响面：按 (pool,uid) upsert accounts 等表，不删除任何现有账号。
+# 注意：2026-10-29 之前的旧备份里没有 schema，--tables all 会在建表阶段报错，
+#       那种备份只能用默认的 accounts（前提是表已经手工建好）。
 
 on:
   workflow_dispatch:
@@ -12,6 +17,10 @@ on:
       file:
         description: 'backup/ 下的备份文件名'
         required: true
+      tables:
+        description: '恢复范围：accounts（默认）/ all / 逗号分隔表名'
+        required: false
+        default: 'accounts'
       write:
         description: '输入 yes 才真正写入（留空=预演）'
         required: false
@@ -32,14 +41,17 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           BACKUP_PASS: ${{ secrets.BACKUP_PASS }}
           FILE: ${{ inputs.file }}
+          TABLES: ${{ inputs.tables }}
           WRITE: ${{ inputs.write }}
         run: |
           set -e
           test -f "backup/$FILE" || { echo "找不到 backup/$FILE"; ls backup/ || true; exit 1; }
-          python3 d1_restore.py "backup/$FILE"
+          TABLES="${TABLES:-accounts}"
+          echo "==== 恢复范围：$TABLES ===="
+          python3 d1_restore.py "backup/$FILE" --tables "$TABLES"
           if [ "$WRITE" = "yes" ]; then
             echo "==== 开始写入 D1 ===="
-            python3 d1_restore.py "backup/$FILE" --write
+            python3 d1_restore.py "backup/$FILE" --tables "$TABLES" --write
           else
             echo "预演结束（未写入）。确认后把 write 填 yes 再跑一次。"
           fi

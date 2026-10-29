@@ -4,10 +4,16 @@
 背景：2026-10-22 起账号池的权威数据（accounts / snapshots / kv_misc）只在 Cloudflare D1 里，
 KV 只是双写备份，GitHub Secrets 分片已降级为只读回退。D1 是单点，必须有独立备份。
 
-做三件事：
-  1) 通过 Cloudflare D1 HTTP API 导出 accounts / snapshots / kv_misc 三张表为 JSON；
-  2) gzip 后用 openssl aes-256-cbc 加密（备份里有明文 CK，绝不能以明文落在 public 仓库）；
-  3) 输出到指定目录，由工作流提交进仓库 backup/ 并上传 artifact。
+做四件事：
+  1) 导出 schema（sqlite_master 里的建表/建索引 DDL）—— 灾难恢复时「先建表」的唯一依据；
+  2) 通过 Cloudflare D1 HTTP API 导出 accounts / snapshots / kv_misc / dead_log 四张表为 JSON；
+  3) gzip 后用 openssl aes-256-cbc 加密（备份里有明文 CK，绝不能以明文落在 public 仓库）；
+  4) 输出到指定目录，由工作流提交进仓库 backup/ 并上传 artifact。
+
+2026-10-29 新增「空库护栏」：
+  账号池现有 480+ 个号，若某次导出只有个位数甚至 0 行，说明 CF_TOKEN/D1_UUID 指错了库、
+  或 D1 真的被清空了。以前这种情况会「成功」生成一份空备份并提交进 backup/，
+  于是最新那份备份就是空气 —— 真要回滚时取「本轮那份」会拿到空库。现在直接失败、不落盘。
 
 环境变量：
   CF_TOKEN        Cloudflare API 令牌（需 D1 读权限）
@@ -15,6 +21,7 @@ KV 只是双写备份，GitHub Secrets 分片已降级为只读回退。D1 是�
   D1_UUID         D1 数据库 uuid（不填用默认 netpool）
   BACKUP_PASS     加密口令（GitHub Secret；丢了就解不开，务必与本地保管的一致）
   BACKUP_DIR      输出目录，默认 backup
+  BACKUP_MIN_ACCOUNTS  空库判定阈值，默认 50（号池正常 480+，留足余量）
 
 用法：
   python d1_backup.py                # 备份到今天
@@ -35,6 +42,12 @@ D1_UUID = (os.environ.get("D1_UUID", "").strip()
 TOK = (os.environ.get("CF_TOKEN", "") or "").strip()
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36"
 OUT_DIR = os.environ.get("BACKUP_DIR", "backup").strip() or "backup"
+# 空库护栏阈值（2026-10-29 新增）。号池正常 480+，50 已留足余量；
+# 真要备份一个刚建的空库做测试，用 BACKUP_MIN_ACCOUNTS=0 显式放开。
+try:
+    MIN_ACCOUNTS = int((os.environ.get("BACKUP_MIN_ACCOUNTS") or "50").strip())
+except ValueError:
+    MIN_ACCOUNTS = 50
 
 # 账号池全字段（含 ck，恢复时必需）
 # 2026-10-27：加 agent / plan（客服 + 套餐）。少备这两列的话，恢复一次客服归属就全没了。
@@ -62,6 +75,24 @@ def api(sql, params=None):
         raise SystemExit(f"D1 查询失败: {json.dumps(d.get('errors'), ensure_ascii=False)[:600]}")
     res = d.get("result") or []
     return (res[0].get("results") or []) if res else []
+
+
+def dump_schema():
+    """建表 / 建索引 DDL（2026-10-29 新增）。
+
+    为什么必须备：schema 原本只活在 Cloudflare 那一个活着的库里，仓库和文档里一句
+    CREATE TABLE 都没有。D1 一旦被删或重建，光有数据备份也灌不回去 —— 表都不存在。
+    现在每次备份都捎带一份，恢复时 --tables schema 先建表再灌数据。
+    """
+    try:
+        return api("SELECT type,name,tbl_name,sql FROM sqlite_master "
+                   "WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%' "
+                   "AND sql IS NOT NULL "
+                   "ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name")
+    except SystemExit as e:
+        # schema 拿不到不该阻断数据备份（数据更要紧），但要吼一声
+        print(f"::warning::schema 导出失败，本次备份不含建表语句：{e}")
+        return []
 
 
 def dump_accounts():
@@ -111,16 +142,30 @@ def main():
     if not TOK:
         raise SystemExit("缺 CF_TOKEN")
     today = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).date().isoformat()
+    schema = dump_schema()
     accounts, snapshots, misc, dead = (dump_accounts(), dump_snapshots(),
                                        dump_misc(), dump_dead())
+
+    # 空库护栏（2026-10-29）：宁可这次备份失败变红，也不能让一份空备份顶掉历史备份。
+    if not accounts or len(accounts) < MIN_ACCOUNTS:
+        raise SystemExit(
+            f"备份异常：accounts 只导出 {len(accounts)} 行（阈值 {MIN_ACCOUNTS}），拒绝生成备份。\n"
+            f"  多半是 CF_TOKEN / D1_UUID 指错了库，或 D1 真被清空了。\n"
+            f"  确认无误（例如确实要备一个空库）请设 BACKUP_MIN_ACCOUNTS=0 重跑。")
+    if not snapshots:
+        # 快照为 0 不影响账号池恢复，只警告：数据备份优先级高于报表数据
+        print("::warning::本次 snapshots 导出 0 行（快照任务可能没跑），账号池备份照常生成")
+
     by_pool = {}
     for r in accounts:
         by_pool[r.get("pool")] = by_pool.get(r.get("pool"), 0) + 1
     payload = {
         "meta": {"date": today, "exported_at": datetime.datetime.utcnow().isoformat() + "Z",
                  "d1_uuid": D1_UUID, "accounts": len(accounts),
-                 "by_pool": by_pool, "snapshots": len(snapshots), "misc": len(misc), "dead_log": len(dead),
+                 "by_pool": by_pool, "snapshots": len(snapshots), "misc": len(misc),
+                 "dead_log": len(dead), "schema": len(schema),
                  "snap_days": SNAP_DAYS},
+        "schema": schema,
         "accounts": accounts,
         "snapshots": snapshots,
         "kv_misc": misc,
@@ -132,11 +177,11 @@ def main():
     with gzip.open(gz_path, "wb", compresslevel=9) as f:
         f.write(raw)
     print(f"[backup] 导出 {len(accounts)} 个号（{by_pool}）、{len(snapshots)} 条快照、"
-          f"{len(misc)} 条 misc、{len(dead)} 条死号流水 → {os.path.getsize(gz_path)/1024:.0f}KB")
+          f"{len(misc)} 条 misc、{len(dead)} 条死号流水、{len(schema)} 条 schema "
+          f"→ {os.path.getsize(gz_path)/1024:.0f}KB")
 
     if "--no-encrypt" in sys.argv:
         print("[backup] 明文模式（仅排查用）：", gz_path)
-        # 2026-10-29：删掉 ::set-output（GitHub 2023 年已移除，纯 no-op 死代码）
         return
 
     pwd = (os.environ.get("BACKUP_PASS") or "").strip()
