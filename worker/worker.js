@@ -1517,6 +1517,13 @@ async function ghPutSecret(name, value) {
 function beijingDate() {
   return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 }
+// 2026-10-30：入池时间精确到秒（'YYYY-MM-DD HH:MM:SS'，北京时间）。
+// 兼容说明：老数据仍是纯 'YYYY-MM-DD'（长度 10），凡是按日期比较/解析的地方都取 slice(0,10)，
+// 字符串比较天然成立（'2026-10-30 14:23' >= '2026-10-30'），所以 run.py / make_accounts.py
+// 的 e.get("added","") < today 过滤规则无需改动。
+function beijingDateTime() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+}
 // ---- 有效期（exp）：'YYYY-MM-DD' 到期即移除；无 exp / 'forever' = 永久 ----
 function isExpiredEntry(e) {
   return !!(e && e.exp && e.exp !== 'forever' && String(e.exp) < beijingDate());
@@ -2632,7 +2639,7 @@ async function handle(request) {
       // 2026-10-27：客服 + 套餐（口径同 /api/join）
       const rc2 = await regCfg();
       const pl2 = planOf(rc2, body.plan);
-      const ent = { ck: 'MUSIC_U=' + mu, song: song.song, added: beijingDate(), name: phone || ('manual:' + v.uid), uid: v.uid, email: email, phone: phone, grp: isG2 ? 2 : 1, exp: expQ.exp || (pl2 ? pl2.exp : undefined),
+      const ent = { ck: 'MUSIC_U=' + mu, song: song.song, added: beijingDateTime(), name: phone || ('manual:' + v.uid), uid: v.uid, email: email, phone: phone, grp: isG2 ? 2 : 1, exp: expQ.exp || (pl2 ? pl2.exp : undefined),
         agent: normAgent(body.agent), plan: pl2 ? pl2.label : normAgent(body.plan).slice(0, 8) };
       const r = await addEntry(ent);
       if (!r.ok) return json({ ok: false, message: r.msg }, 400);
@@ -4232,8 +4239,10 @@ function otherMis(a){
 var DAY_MS = 86400000;
 // 入池天数：登记当天算 0（次日才开始被听）
 function daysSince(added) {
-  if (!added || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(added))) return null;
-  var a = Date.parse(String(added) + 'T00:00:00Z'), t = Date.parse(String(DATA && DATA.date) + 'T00:00:00Z');
+  // 2026-10-30：added 可能是 'YYYY-MM-DD HH:MM:SS'（新）或 'YYYY-MM-DD'（老），统一取日期部分
+  var ad = String(added || '').slice(0, 10);
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(ad)) return null;
+  var a = Date.parse(ad + 'T00:00:00Z'), t = Date.parse(String(DATA && DATA.date) + 'T00:00:00Z');
   if (isNaN(a) || isNaN(t)) return null;
   return Math.round((t - a) / DAY_MS);
 }
@@ -4337,7 +4346,7 @@ function computeMarks(r, susSet){
   if(!hasSvc&&!hasCycle&&!r.reset&&a&&a.rate!=null&&a.rate<100&&r.streak&&r.streak>=2)add('b-yellow','连续'+r.streak+'天未涨','连续 '+r.streak+' 天 650 进度没涨（含小幅回落，没快照的断档天已跳过）。先看「近30日播放量」：在跌=30天滚动窗口老播放退出（做过满 100% 的号常见，属自然衰减，不用管）；在涨却不动=播放被判无效，超过 4 天才需要人工查');
   // E 入池状态
   // 2026-10-26：给当天登记的号加行内标记，这样顶部「今日入池」这个数就能被搜索框直接筛出来（顶部=行内）。
-  if(String(e.added||'')===String(DATA.date))add('b-blue','今日入池','今天（'+DATA.date+'）才登记的新号：明天才进轮转开始被听，今天没有快照、650 进度是空的都属正常，不用查');
+  if(String(e.added||'').slice(0,10)===String(DATA.date))add('b-blue','今日入池','今天（'+DATA.date+'）才登记的新号：明天才进轮转开始被听，今天没有快照、650 进度是空的都属正常，不用查');
   if(e.song&&a&&(a.rate||0)>=100)add('b-green','已达100%','本周期 650 已达 100%：已经做满，不需要再刷更多（继续刷也不会有额外收益）。等下个 31 天周期重新起算会自动归零重爬');
   // 2026-10-26：删掉「次日才入池」「新号未开刷」两个标记 —— 新号前两三天进度低本来就是正常爬坡，
   // 打完标记反而制造噪音。顶部只保留一个「今日入池」总数（days<=0 的号数），行内不再重复提示。
@@ -4515,7 +4524,7 @@ function render(){
       +'<td data-l="'+LB_D+'">'+dCell+'</td>'
       +'<td class="num" data-l="近30日播放">'+(a&&a.rpc30!=null?a.rpc30:'—')+'</td>'
       +'<td data-l="其他任务">'+misCell+'</td>'
-      +'<td class="num" data-l="入池">'+esc(e.added)+'</td>'
+      +'<td class="num" data-l="入池">'+fmtAdded(e.added)+'</td>'
       +'<td class="num" data-l="有效期">'+esc(e.exp||'永久')+'</td>'
       +'<td data-l="套餐">'+plCell+'</td>'
       +'<td>'+(marks||'<span style="color:#bbb">正常</span>')+'</td>'
@@ -4532,6 +4541,7 @@ function pickPlan(label){
   render();
 }
 // 2026-10-23：运行状态横条（作业状态/应跑实跑/快照新鲜度/今日删号与待复核）
+function fmtAdded(x){x=String(x||'');if(x.length<11)return esc(x);return esc(x.slice(0,10))+'<div class="snap-at">'+esc(x.slice(11))+'</div>';}
 function bjTime(iso){if(!iso)return '';var d=new Date(iso);if(isNaN(d.getTime()))return '';var b=new Date(d.getTime()+8*3600*1000);return ('0'+(b.getUTCMonth()+1)).slice(-2)+'-'+('0'+b.getUTCDate()).slice(-2)+' '+('0'+b.getUTCHours()).slice(-2)+':'+('0'+b.getUTCMinutes()).slice(-2);}
 function renderRunbar(){
   if(!DATA)return;
